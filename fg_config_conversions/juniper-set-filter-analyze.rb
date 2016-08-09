@@ -69,7 +69,7 @@ def process_firewall fw
                 when :'policer'
                   $h_filters[fw.at(5)][fw.at(7)][:policer] = fw.at(10)
                 else
-                  p "ipv4 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}"
+                  p "ipv4 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
                 end
             ### other filter object reference
             when :filter
@@ -114,7 +114,7 @@ def process_firewall fw
               when :'policer'
                 $h_filters6[fw.at(5)][fw.at(7)][:policer] = fw.at(10)
               else
-                p "ipv6 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}"
+                p "ipv6 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
             end
           ### other filter object reference
           when :filter
@@ -197,6 +197,88 @@ def process_policy_options po
   end
 end
 
+def process_interfaces int
+  return if int.at(3) != :unit
+
+  if $h_interfaces.has_key?(int.at(2)) == false
+    $h_interfaces[int.at(2)] = Hash.new
+  end
+
+  if $h_interfaces[int.at(2)].has_key?(int.at(4)) == false
+    $h_interfaces[int.at(2)][int.at(4)] = {\
+     :description => nil, \
+     :'address_v4_primary' => nil,\
+     :'ipv4_input_filter' => nil,\
+     :'ipv4_output_filter' => nil,\
+     :'address_v6_primary' => nil,\
+     :'ipv6_input_filter' => nil,\
+     :'ipv6_output_filter' => 'nil',\
+     :vlan => nil,\
+     :vrrp => Hash.new}
+    $interface_count += 1
+  end
+
+  ### IP address info
+  if (int.at(6) == :inet && int.at(7) == :address) && (int.at(9) == :primary || int.at(9) == nil)
+    $h_interfaces[int.at(2)][int.at(4)][:'address_v4_primary'] = int.at(8)
+  end
+  if (int.at(6) == :inet6 && int.at(7) == :address) && (int.at(9) == :primary || int.at(9) == nil)
+    $h_interfaces[int.at(2)][int.at(4)][:'address_v6_primary'] = int.at(8)
+  end
+
+  ### Set Interface Description
+  $h_interfaces[int.at(2)][int.at(4)][:description] = int.at(6) if int.at(5) == :description
+
+  ### Set vlan-id
+  $h_interfaces[int.at(2)][int.at(4)][:vlan] = int.at(6) if int.at(5) == :'vlan-id'
+
+  ### Set input/output filters
+  $h_interfaces[int.at(2)][int.at(4)][:ipv4_input_filter] = int.at(9) if int.at(6) == :inet && int.at(7) == :filter\
+   && int.at(8) == :input
+  $h_interfaces[int.at(2)][int.at(4)][:ipv4_output_filter] = int.at(9) if int.at(6) == :inet && int.at(7) == :filter\
+   && int.at(8) == :output
+  $h_interfaces[int.at(2)][int.at(4)][:ipv6_input_filter] = int.at(9) if int.at(6) == :inet6 && int.at(7) == :filter\
+   && int.at(8) == :input
+  $h_interfaces[int.at(2)][int.at(4)][:ipv6_output_filter] = int.at(9) if int.at(6) == :inet6 && int.at(7) == :filter\
+   && int.at(8) == :output
+
+
+  ### VRRP Detail
+  if int.at(9) == :'vrrp-group'
+    if $h_interfaces[int.at(2)][int.at(4)][:vrrp].has_key?(int.at(10)) == false
+      $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)] = {\
+      :'virtual-address' => nil,\
+      :'intf-address' => nil,\
+      :priority => nil,\
+      :'advertise-interval' => nil,\
+      :preempt => nil,\
+      :'accept-data' => nil,\
+      :'authentication-type' => nil,\
+      :'authentication-key' => nil }
+    end
+
+    $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'intf-address'] = int.at(8)
+
+    case int.at(11)
+      when :'virtual-address'
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'virtual-address'] = int.at(12)
+      when :priority
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:priority] = int.at(12)
+      when :'advertise-interval'
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'advertise-interval'] = int.at(12)
+      when :preempt
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:preempt] = :true
+      when :'accept-data'
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'accept-data'] = :true
+      when :'authentication-type'
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'authentication-type'] = int.at(12)
+      when :'authentication-key'
+        $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'authentication-key'] = int.at(12)
+    end
+
+  end
+end
+
 #########################################
 ### Main
 #########################################
@@ -214,7 +296,6 @@ $h_filters = Hash.new
 $h_filters6 = Hash.new
 $h_prefix_lists = Hash.new
 $h_policy_statements = Hash.new
-
 
 ### Create counters
 $ipv4_term_count = 0
@@ -243,6 +324,7 @@ $prefix_list_count = 0
 $prefix_list_address_count = 0
 $policy_statement_count = 0
 $policy_statement_term_count = 0
+$interface_count = 0
 
 
 f.each_line do |line|
@@ -253,7 +335,7 @@ f.each_line do |line|
 
     ###  When line defines an interface take this action
     when :interfaces
-      next
+      process_interfaces line
 
     ### When line defines firewall take this action
     when :firewall
@@ -271,14 +353,13 @@ f.each_line do |line|
   break if linecount >= MAX_COUNT
 end
 
-create_fg_ipv4_policy
-
 f.close
 
 #pp $h_filters
 #pp $h_filters6
 #pp $h_prefix_lists
-pp $h_policy_statements
+#pp $h_policy_statements
+pp $h_interfaces
 #puts $h_filters.to_json
 #JSON.pretty_generate($h_filters).gsub(":", " =>")
 p ""
@@ -300,3 +381,4 @@ p "Total Prefix Lists................................#{$prefix_list_count}"
 p "  -Total Addresses in Prefix Lists................#{$prefix_list_address_count}"
 p "Total Policy-Statement Filters....................#{$policy_statement_count}"
 p "  -Total Policy-Statement Terms...................#{$policy_statement_term_count}"
+p "Total Interfaces..................................#{$interface_count}"
