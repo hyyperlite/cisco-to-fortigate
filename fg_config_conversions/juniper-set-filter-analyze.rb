@@ -16,18 +16,7 @@ where [options] are:
 ##################################################
 ### Methods
 ##################################################
-def process_firewall fw
-  ## Temp Testing
-  # p "1: #{fw.at(1)}"
-  # p "2: #{fw.at(2)}"
-  # p "3: #{fw.at(3)}"
-  # p "4: #{fw.at(4)}"
-  # p "5: #{fw.at(5)}"
-  # p "6: #{fw.at(6)}"
-  # p "7: #{fw.at(7)}"
-  # p "8: #{fw.at(8)}"
-  # p "9: #{fw.at(9)}"
-  # p "10: #{fw.at(10)}"
+def process_firewall(fw)
 
   #### Make sure the record is of firewall sub-type family
   if fw.at(2) == :family
@@ -35,11 +24,16 @@ def process_firewall fw
     if fw.at(3) == :inet  && fw.at(4) == :filter
         ### Ensure that a "term" has been specified then create the first key "filter"
         if fw.at(6) == :term
-          $h_filters[fw.at(5)] = {} if $h_filters.has_key?(fw.at(5)) == false
+          $h_filters[fw.at(5)] = {} unless $h_filters.has_key?(fw.at(5))
 
           ### Add the terms to the filter hashes and create the term detail hash structure
-          if $h_filters[fw.at(5)].has_key?(fw.at(7)) == false
-            $h_filters[fw.at(5)][fw.at(7)] = {:source => Hash.new, :action => nil, :'forwarding-class' => nil, :'loss-priority' => nil, :policer => nil}
+          unless $h_filters[fw.at(5)].has_key?(fw.at(7))
+            $h_filters[fw.at(5)][fw.at(7)] = {\
+            :source => Hash.new,\
+            :action => nil,\
+            :'forwarding-class' => nil,\
+            :'loss-priority' => nil,\
+            :policer => nil}
             $ipv4_term_count += 1
           end
 
@@ -81,9 +75,9 @@ def process_firewall fw
     elsif fw.at(3) == :inet6 && fw.at(4) == :filter
       ### Ensure that a "term" has been specified then create the first key "filter"
       if fw.at(6) == :term
-        $h_filters6[fw.at(5)] = {} if $h_filters6.has_key?(fw.at(5)) == false
+        $h_filters6[fw.at(5)] = {} unless $h_filters6.has_key?(fw.at(5))
         ### Add the terms to the filter hashes and create the term detail hash structure
-        if $h_filters6[fw.at(5)].has_key?(fw.at(7)) == false
+        unless $h_filters6[fw.at(5)].has_key?(fw.at(7))
           $h_filters6[fw.at(5)][fw.at(7)] = {:source => Hash.new, :action => nil, :'forwarding-class' => nil, :'loss-priority' => nil, :policer => nil}
           $ipv6_term_count += 1
         end
@@ -122,21 +116,21 @@ def process_firewall fw
         end
       end
 
-    elsif fw.at(3) == "vpls" && fw.at(4) == "filter"
-      p "this is a vpls filter"
+    elsif fw.at(3) == :vpls && fw.at(4) == :filter
+      p "no action taken on vpls filter (yet)"
     else
       return
     end
   elsif fw.at(2) == "policer"
-    #p "policiers are unsupported"
+    p "no action taken on policiers (yet)"
   else
-    #p "unsupported firewall option"
+    p "unsupported firewall option, #{fw.at(2)}"
   end
 end
 
-def process_policy_options po
+def process_policy_options(po)
   if po.at(2) == :'prefix-list'
-    if $h_prefix_lists.has_key?(po.at(3)) == false
+    unless $h_prefix_lists.has_key?(po.at(3))
       $h_prefix_lists[po.at(3)] = Array.new
       $prefix_list_count += 1
     end
@@ -145,11 +139,11 @@ def process_policy_options po
   $prefix_list_address_count += 1
 
   elsif po.at(2) == :'policy-statement'
-    if $h_policy_statements.has_key?(po.at(3)) == false
+    unless $h_policy_statements.has_key?(po.at(3))
       $h_policy_statements[po.at(3)] = Hash.new
       $policy_statement_count += 1
     end
-    if $h_policy_statements[po.at(3)].has_key?(po.at(5)) == false
+    unless $h_policy_statements[po.at(3)].has_key?(po.at(5))
       $h_policy_statements[po.at(3)][po.at(5)] = {:source => Hash.new, :action => nil, :metric => nil, \
       :'next-hop' => nil, :tag => nil, :origin => nil, :pref => nil, :'local-pref' => nil, :next => nil, \
       :'lb-perpacket' => nil}
@@ -197,14 +191,14 @@ def process_policy_options po
   end
 end
 
-def process_interfaces int
+def process_interfaces(int)
   return if int.at(3) != :unit
 
-  if $h_interfaces.has_key?(int.at(2)) == false
+  unless $h_interfaces.has_key?(int.at(2))
     $h_interfaces[int.at(2)] = Hash.new
   end
 
-  if $h_interfaces[int.at(2)].has_key?(int.at(4)) == false
+  unless $h_interfaces[int.at(2)].has_key?(int.at(4))
     $h_interfaces[int.at(2)][int.at(4)] = {\
      :description => nil, \
      :'address_v4_primary' => nil,\
@@ -245,7 +239,7 @@ def process_interfaces int
 
   ### VRRP Detail
   if int.at(9) == :'vrrp-group'
-    if $h_interfaces[int.at(2)][int.at(4)][:vrrp].has_key?(int.at(10)) == false
+    unless $h_interfaces[int.at(2)][int.at(4)][:vrrp].has_key?(int.at(10))
       $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)] = {\
       :'virtual-address' => nil,\
       :'intf-address' => nil,\
@@ -255,6 +249,8 @@ def process_interfaces int
       :'accept-data' => nil,\
       :'authentication-type' => nil,\
       :'authentication-key' => nil }
+
+      $vrrp_group_count += 1
     end
 
     $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'intf-address'] = int.at(8)
@@ -283,7 +279,7 @@ end
 ### Main
 #########################################
 ### open config file for reading
-f = File.open opts[:configfile], "r"
+f = File.open opts[:configfile], 'r'
 
 ### Limit execution cycles during testing
 #MAX_COUNT = 100000
@@ -325,8 +321,9 @@ $prefix_list_address_count = 0
 $policy_statement_count = 0
 $policy_statement_term_count = 0
 $interface_count = 0
+$vrrp_group_count = 0
 
-
+### Read/process configuration into usable objects
 f.each_line do |line|
   linecount += 1
   line = line.split
@@ -342,7 +339,7 @@ f.each_line do |line|
       process_firewall line
 
     ### When line defines policy-options take this action
-    when :"policy-options"
+    when :'policy-options'
       process_policy_options line
 
     ### All other definition types aare not yet supported so skip
@@ -353,8 +350,15 @@ f.each_line do |line|
   break if linecount >= MAX_COUNT
 end
 
+### Close the config file
 f.close
 
+### Create policy
+
+
+########################
+#### Outputs
+########################
 #pp $h_filters
 #pp $h_filters6
 #pp $h_prefix_lists
@@ -362,8 +366,8 @@ f.close
 pp $h_interfaces
 #puts $h_filters.to_json
 #JSON.pretty_generate($h_filters).gsub(":", " =>")
-p ""
-p "############ Stats ###############"
+p ''
+p '############ Stats ###############'
 p "Total Lines Procssed............................. #{linecount}"
 p "Total IPv4 Filters............................... #{$h_filters.size}"
 p "  -Total IPv4 Terms...............................#{$ipv4_term_count}"
@@ -382,3 +386,4 @@ p "  -Total Addresses in Prefix Lists................#{$prefix_list_address_coun
 p "Total Policy-Statement Filters....................#{$policy_statement_count}"
 p "  -Total Policy-Statement Terms...................#{$policy_statement_term_count}"
 p "Total Interfaces..................................#{$interface_count}"
+p "  -Total VRRP Groups..............................#{$vrrp_group_count}"
