@@ -275,6 +275,38 @@ def process_interfaces(int)
   end
 end
 
+def create_policy
+  a_addresses = Array.new
+
+  countaddresses = 0
+  $h_filters.each do |filtername,filterarray|
+    $h_filters[filtername].each do |termname,termarray|
+      $h_filters[filtername][termname][:source].each do |sourcename, sourcetype|
+        if sourcetype == :'source-address' || sourcetype == :'destination-address'
+
+          # Adding all to new hash in order to remove duplicates
+          a_addresses << sourcename
+        end
+      end
+    end
+  end
+
+
+
+#fgaddress = <<-EOS
+# config fireawall address
+#   edit #{sourcename}
+#     set type subnet
+#     set subnet #{sourcename}
+#   next
+# end
+#EOS
+#
+#         p fgaddress
+
+  p "addreess array count: #{a_addresses.count}"
+  p "address array uniq #{a_addresses.uniq.count}"
+end
 #########################################
 ### Main
 #########################################
@@ -354,6 +386,7 @@ end
 f.close
 
 ### Create policy
+create_policy
 
 
 ########################
@@ -363,7 +396,7 @@ f.close
 #pp $h_filters6
 #pp $h_prefix_lists
 #pp $h_policy_statements
-pp $h_interfaces
+#pp $h_interfaces
 #puts $h_filters.to_json
 #JSON.pretty_generate($h_filters).gsub(":", " =>")
 p ''
