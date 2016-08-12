@@ -363,6 +363,7 @@ end
 
 def create_fgpolicy_service_objects
 
+
   config = String.new               ### initialize the local (to this method) config container var
   fgservice = String.new            ### initialize the item by item config var
   service_tracker = Set.new             ### create set for tracking if servie already has been created
@@ -459,7 +460,6 @@ EOS
 
 fgservice = ''
 fgservice = <<-EOS
-
 config firewall service custom
   edit #{sourcename}-tcp
     set tcp-portrange #{lowport} #{highport}
@@ -467,7 +467,6 @@ config firewall service custom
     set comment "created by hyyperconverter"
   next
 end
-
 EOS
 
               ### add each output from Heredocs above to config var (will pass this back to main)
@@ -486,7 +485,6 @@ config firewall service custom
     set comment "created by hyyperconverter"
   next
 end
-
 EOS
 
               ### add each output from Heredocs above to config var (will pass this back to main)
@@ -506,8 +504,7 @@ config firewall service custom
     set comment "created by hyyperconverter"
   next
 end
-
-                EOS
+EOS
 
                 ### add each output from Heredocs above to config var (will pass this back to main)
                 config += fgservice
@@ -526,8 +523,7 @@ config firewall service custom
     set comment "created by hyyperconverter"
   next
 end
-
-                EOS
+EOS
 
                 ### add each output from Heredocs above to config var (will pass this back to main)
                 config += fgservice
@@ -537,23 +533,53 @@ end
 
             else
               ### Get port matching sourcename from h_tcpudp service/port mapping array
-              port = h_tcpudp[sourcename.to_s]
-
-              #p "Sourcename: #{sourcename} --> Port: #{port}"
-              if port == nil
-                p "Couldn't find a protocol match: Sourcename: #{sourcename} --> Port: #{port}"
-                next
-              end
-
-
-
+#               port = h_tcpudp[sourcename.to_s]
+#
+#               #p "Sourcename: #{sourcename} --> Port: #{port}"
+#               if port == nil
+#                 p "Couldn't find a protocol match: Sourcename: #{sourcename} --> Port: #{port}"
+#                 next
+#               end
+#               tcp, udp, icmp = nil
+#               if $h_filters[filtername][termname][:source].has_key?(:tcp)
+#                 tcp = 1
+#               end
+#
+#               if $h_filters[filtername][termname][:source].has_key?(:udp)
+#                 udp = 1
+#               end
+#
+#               if $h_filters[filtername][termname][:source].has_key?(:icmp)
+#                 icmp = 1
+#               end
+#               if !tcp && !udp && !icmp
+#                 tcp = 1
+#                 udp = 1
+#               end
+#
+#               if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+#
+#                 fgservice = ''
+#                 fgservice = <<-EOS
+# config firewall service custom
+#   edit #{sourcename}_source
+#     set tcp-portgrange 1 65535 #{lowport} #{highport}
+#     set category Comcast
+#     set comment "created by hyyperconverter"
+#   next
+# end
+# EOS
+#                 ### add each output from Heredocs above to config var (will pass this back to main)
+#                 config += fgservice
+#                 service_tracker.add("#{sourcename}")
+#
+#               end
             end
 
           when *%w[icmp-type icmp-type-exempt]
             #
           else
             # p "service: service-type not yet supported #{sourcetype}"
-
         end
       end
     end
@@ -565,6 +591,14 @@ end
 
   ### Return the resulting config to main execution
   return config
+end
+
+def create_fgpolicy_rules
+ # $h_filters.each_key do |filtername|
+ #   $h_filters[filtername].each_key do |termname|
+ #
+ #   end
+ # end
 end
 #########################################
 ### Main
@@ -650,9 +684,10 @@ filein.close
 
 ### Create FG policy & objects
 fgconfig = String.new
-#fgconfig += create_fgpolicy_address_objects()
+#fgconfig += create_fgpolicy_address_objects
 fgconfig += create_fgpolicy_service_objects
 #fgconfig += create_fgpolicy_rules
+#create_fgpolicy_rules
 #fgconfig += create_fginterfaces
 
 ### Write configuration to output file
