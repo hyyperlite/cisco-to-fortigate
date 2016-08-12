@@ -364,9 +364,9 @@ end
 def create_fgpolicy_service_objects
 
 
-  config = String.new               ### initialize the local (to this method) config container var
-  fgservice = String.new            ### initialize the item by item config var
+  svcconfig = String.new
   service_tracker = Set.new             ### create set for tracking if servie already has been created
+  category = 'comcast'
 
   ### Open external files with data for mapping protocol port numbers
   ip = File.open 'ip_protocol_nums.txt', 'r'
@@ -411,15 +411,15 @@ def create_fgpolicy_service_objects
   icmp.close
 
   ### Create a new service category in the local fg config file to assign all created services to
-  config = <<-EOS
+  svcconfig = <<-EOS
 config firewall service category
-  edit Comcast
+  edit #{category}
 end
 
 EOS
 
-  $h_filters.each do |filtername,filterarray|
-    $h_filters[filtername].each do |termname,termarray|
+  $h_filters.each_key do |filtername|
+    $h_filters[filtername].each_key do |termname|
       $h_filters[filtername][termname][:source].each do |sourcename, sourcetype|
 
         ### Use sourcetype to identify service definitions then modify those as needed to
@@ -427,18 +427,24 @@ EOS
         case sourcetype.to_s   # we will be matching against strings and output to string so need to chg from symbol
           when *%w[destination-port source-port port]
 
-            ### matching anythng that is all digits or digits with a single dash
+            ### matching anything that is all digits or digits with a single dash
             ### the just digits indicates a single port number while with a dash is a range
             ### anything that does not match these will be processed in subsequent case
             ### as we'll need to map those from words "http, ftp, etc" to port numbers
             if /^(\d+)$/ =~ sourcename || /^(\d+[-]\d+)$/ =~ sourcename
 
+              ### Some entries contain a range of ports.  In these cases
+              ### we need to split the low and high ports for assignment
               lowport, highport = ''
               lowport, highport = sourcename.to_s.split('-')
 
               highport = lowport if !highport
               #p "lowport #{lowport}, highport #{highport}"
 
+              ### Check to see if the associated term defines tcp, udp or icmp
+              ### if it defines none of these then we will create objects for
+              ### both tcp and udp.  It defines just icmp, we won't worry about the
+              ### tcp/udp objects and will process icmp under a different case
               tcp, udp, icmp = nil
               if $h_filters[filtername][termname][:source].has_key?(:tcp)
                 tcp = 1
@@ -456,130 +462,107 @@ EOS
                udp = 1
              end
 
-            if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+              config_fgservice()
 
-fgservice = ''
-fgservice = <<-EOS
-config firewall service custom
-  edit #{sourcename}-tcp
-    set tcp-portrange #{lowport} #{highport}
-    set category Comcast
-    set comment "created by hyyperconverter"
-  next
-end
-EOS
+              ### create a tcp destination object if term contains protocol tcp and if
+              ### it's not type source-port and if we haven't already created this object
+              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-tcp", lowport, highport, "from term: #{termname}", category, :dst, :tcp)
+                service_tracker.add("#{sourcepname}-tcp")
+              end
 
-              ### add each output from Heredocs above to config var (will pass this back to main)
-              config += fgservice
-              service_tracker.add("#{sourcename}-tcp")
-            end
+              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-udp", lowport, highport, "from term: #{termname}", category, :dst, :udp)
+                service_tracker.add("#{sourcename}-udp")
+              end
 
-            if (udp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
-
-fgservice = ''
-fgservice = <<-EOS
-config firewall service custom
-  edit #{sourcename}-udp
-    set udp-portgrange #{lowport} #{highport}
-    set category Comcast
-    set comment "created by hyyperconverter"
-  next
-end
-EOS
-
-              ### add each output from Heredocs above to config var (will pass this back to main)
-              config += fgservice
-              service_tracker.add("#{sourcename}-udp")
-
-            end
-
-              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp_source") && sourcetype == :'source-port')
-
-                fgservice = ''
-                fgservice = <<-EOS
-config firewall service custom
-  edit #{sourcename}-tcp_source
-    set tcp-portgrange 1 65535 #{lowport} #{highport}
-    set category Comcast
-    set comment "created by hyyperconverter"
-  next
-end
-EOS
-
-                ### add each output from Heredocs above to config var (will pass this back to main)
-                config += fgservice
+              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}", category, :dst, :tcp)
                 service_tracker.add("#{sourcename}-tcp_source")
-
               end
 
-              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp_source") && sourcetype == :'source-port')
-
-                fgservice = ''
-                fgservice = <<-EOS
-config firewall service custom
-  edit #{sourcename}-udp_source
-    set udp-portgrange 1 65535 #{lowport} #{highport}
-    set category Comcast
-    set comment "created by hyyperconverter"
-  next
-end
-EOS
-
-                ### add each output from Heredocs above to config var (will pass this back to main)
-                config += fgservice
+              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}", category, :dst, :udp)
                 service_tracker.add("#{sourcename}-udp_source")
-
               end
 
+##############
+##############  Map named protocol term definitions to ports  (aka http, ftp, snmp)
+##############
             else
               ### Get port matching sourcename from h_tcpudp service/port mapping array
-#               port = h_tcpudp[sourcename.to_s]
-#
-#               #p "Sourcename: #{sourcename} --> Port: #{port}"
-#               if port == nil
-#                 p "Couldn't find a protocol match: Sourcename: #{sourcename} --> Port: #{port}"
-#                 next
-#               end
-#               tcp, udp, icmp = nil
-#               if $h_filters[filtername][termname][:source].has_key?(:tcp)
-#                 tcp = 1
-#               end
-#
-#               if $h_filters[filtername][termname][:source].has_key?(:udp)
-#                 udp = 1
-#               end
-#
-#               if $h_filters[filtername][termname][:source].has_key?(:icmp)
-#                 icmp = 1
-#               end
-#               if !tcp && !udp && !icmp
-#                 tcp = 1
-#                 udp = 1
-#               end
-#
-#               if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
-#
-#                 fgservice = ''
-#                 fgservice = <<-EOS
-# config firewall service custom
-#   edit #{sourcename}_source
-#     set tcp-portgrange 1 65535 #{lowport} #{highport}
-#     set category Comcast
-#     set comment "created by hyyperconverter"
-#   next
-# end
-# EOS
-#                 ### add each output from Heredocs above to config var (will pass this back to main)
-#                 config += fgservice
-#                 service_tracker.add("#{sourcename}")
-#
-#               end
+              port, lowport, highport = ''
+
+              port = h_tcpudp[sourcename.to_s]
+              lowport, highport = port.split('-')
+              highport = lowport if !highport
+
+              ### if port is nil then no match was found, print out some info and move to next record
+              if port == nil
+                p "Couldn't find a protocol match: Sourcename: #{sourcename} --> Port: #{port}"
+                next
+              end
+
+              ### Check to see if the associated term defines tcp, udp or icmp
+              ### if it defines none of these then we will create objects for
+              ### both tcp and udp.  It defines just icmp, we won't worry about the
+              ### tcp/udp objects and will process icmp under a different case
+              tcp, udp, icmp = nil
+              if $h_filters[filtername][termname][:source].has_key?(:tcp)
+                tcp = 1
+              end
+
+              if $h_filters[filtername][termname][:source].has_key?(:udp)
+                udp = 1
+              end
+
+              if $h_filters[filtername][termname][:source].has_key?(:icmp)
+                icmp = 1
+              end
+              if !tcp && !udp && !icmp
+                tcp = 1
+                udp = 1
+              end
+
+              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-tcp", lowport, highport, "from term: #{termname}", category, :dst, :tcp)
+                service_tracker.add("#{sourcename}-tcp")
+              end
+
+              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-udp", lowport, highport, "from term: #{termname}", category, :dst, :udp)
+                service_tracker.add("#{sourcename}-udp")
+              end
+
+              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}", category, :src, :tcp)
+                service_tracker.add("#{sourcename}-tcp_source")
+              end
+
+              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
+                svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}", category, :src, :udp)
+                service_tracker.add("#{sourcename}-udp_source")
+              end
             end
 
-          when *%w[icmp-type icmp-type-exempt]
-            #
+#################
+################# Process ICMP protocol types
+#################
+
+          when *%w[icmp-type icmp-type-except]
+            port = ''
+            port = h_icmp[sourcename.to_s]
+            p "source: #{sourcename}, sourcetype: #{sourcetype}, ICMP Type Code: #{port}"
+            if port
+              svcconfig += config_fgservice("ICMP-#{sourcename}", port, port, "from term: #{termname}", category, :icmp, :icmp)
+
+            else
+              p "service: icmp-type not found"
+              next
+
+            end
+
           else
-            # p "service: service-type not yet supported #{sourcetype}"
         end
       end
     end
@@ -590,16 +573,122 @@ EOS
   end
 
   ### Return the resulting config to main execution
-  return config
+  return svcconfig
 end
 
 def create_fgpolicy_rules
+
  # $h_filters.each_key do |filtername|
  #   $h_filters[filtername].each_key do |termname|
  #
  #   end
  # end
 end
+
+
+def config_fgservice(servicename, lowport, highport, comment, category, type, proto)
+
+  config = String.new
+
+#####################################
+### TCP and Destination Entry
+####################################
+if type == :dst && proto == :tcp
+
+fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set tcp-portgrange #{lowport} #{highport}
+    set category #{category}
+    set comment "#{comment}"
+  next
+end
+EOS
+
+config += fgservice
+end
+
+####################################
+### UDP and Destination Entry
+####################################
+if type == :dst && proto == :udp
+
+    fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set tcp-portgrange #{lowport} #{highport}
+    set category #{category}
+    set comment "#{comment}"
+  next
+end
+EOS
+
+config += fgservice
+end
+
+###################################
+### TCP and Source Entry
+####################################
+if type == :src && proto == :tcp
+
+fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set tcp-portgrange 1 65535 #{lowport} #{highport}
+    set category #{category}
+    set comment "#{comment}"
+  next
+end
+EOS
+
+config += fgservice
+end
+
+###################################
+### UDP and Source Entry
+####################################
+if type == :src && proto == :udp
+
+fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set udp-portgrange 1 65535 #{lowport} #{highport}
+    set category #{category}
+    set comment "#{comment}"
+  next
+end
+EOS
+
+config += fgservice
+end
+
+###################################
+### ICMP Service Entry
+####################################
+if type == :icmp && proto == :icmp
+
+fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set protocol ICMP
+    set  icmptype #{lowport}
+    set category #{category}
+    set comment "#{comment}"
+  next
+end
+EOS
+
+config += fgservice
+end
+
+  return config
+
+end
+
+
+
+
+
 #########################################
 ### Main
 #########################################
