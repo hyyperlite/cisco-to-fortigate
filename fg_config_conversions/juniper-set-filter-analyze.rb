@@ -4,7 +4,7 @@ require 'json'
 require 'set'
 
 #### Handle Input Options
-opts = Trollop::options {
+$opts = Trollop::options {
   version 'juniper-reader v0.1 '
   banner <<-EOS
 Usage:
@@ -14,7 +14,8 @@ EOS
 
   opt :junosin, 'Configuration File', :type => :string, :default => 'juniper.conf', :short => '-i'
   opt :fgout, 'Configuration File', :type => :string, :default => 'output.conf', :short => '-o'
-  opt :debug, 'Turn on extended messaging', :short => '-d'
+  opt :debug, 'Turn on detailed messaging', :short => '-d'
+  opt :verbose, 'Enable process details', :short => '-v'
   opt :nostats, 'Disable statistical output', :short => '-n'
 }
 ##################################################
@@ -69,7 +70,9 @@ def process_firewall(fw)
                 when :'policer'
                   $h_filters[fw.at(5)][fw.at(7)][:policer] = fw.at(10)
                 else
-                  p "ipv4 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
+                  if $opts[:verbose]
+                    p "ipv4 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
+                  end
               end
             ### other filter object reference
             when :filter
@@ -117,7 +120,9 @@ def process_firewall(fw)
               when :'policer'
                 $h_filters6[fw.at(5)][fw.at(7)][:policer] = fw.at(10)
               else
-                p "ipv6 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
+                if $opts[:verbose]
+                  p "ipv6 filter: action-type not supported, skipping: #{fw.at(9)} --> #{fw.at(10)}" unless fw.at(9) == :count
+                end
             end
           ### other filter object reference
           when :filter
@@ -128,16 +133,16 @@ def process_firewall(fw)
     ### If this is a vpls firewall filter, for now we are noting it in output but taking no action
     ### as vpls isn't easily translatable to FortiGate
     elsif fw.at(3) == :vpls && fw.at(4) == :filter
-      p "firewall: no action taken on vpls filter (yet)"
+      p "firewall: no action taken on vpls filter (yet)" if $opts[:verbose]
     else
       return
     end
 
   ### If this is not a firewall filter and is instead a policer definition
   elsif fw.at(2) == "policer"
-    p "firewall: no action taken on policiers (yet)"
+    p "firewall: no action taken on policiers (yet)" if $opts[:verbose]
   else
-    p "firewall: unsupported firewall option, #{fw.at(2)}"
+    p "firewall: unsupported firewall option, #{fw.at(2)}" if $opts[:verbose]
   end
 
 end
@@ -196,12 +201,12 @@ def process_policy_options(po)
           when :next
             $h_policy_statements[po.at(3)][po.at(5)][:next] = po.at(8)
           else
-             p "policy-statement: action-type not supported, skipping: #{po.at(7)} --> #{po.at(8)}"
+             p "policy-statement: action-type not supported, skipping: #{po.at(7)} --> #{po.at(8)}" if $opts[:verbose]
         end
     end
 
   else
-    p "policy-option: type not supported, skipping: #{po.at(2)}"
+    p "policy-option: type not supported, skipping: #{po.at(2)}" if $opts[:verbose]
   end
 end
 
@@ -439,7 +444,6 @@ EOS
               lowport, highport = sourcename.to_s.split('-')
 
               highport = lowport if !highport
-              #p "lowport #{lowport}, highport #{highport}"
 
               ### Check to see if the associated term defines tcp, udp or icmp
               ### if it defines none of these then we will create objects for
@@ -462,13 +466,11 @@ EOS
                udp = 1
              end
 
-              config_fgservice()
-
               ### create a tcp destination object if term contains protocol tcp and if
               ### it's not type source-port and if we haven't already created this object
               if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-tcp", lowport, highport, "from term: #{termname}", category, :dst, :tcp)
-                service_tracker.add("#{sourcepname}-tcp")
+                service_tracker.add("#{sourcename}-tcp")
               end
 
               if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
@@ -477,12 +479,12 @@ EOS
               end
 
               if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
-                svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}", category, :dst, :tcp)
+                svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}", category, :src, :tcp)
                 service_tracker.add("#{sourcename}-tcp_source")
               end
 
               if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
-                svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}", category, :dst, :udp)
+                svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}", category, :src, :udp)
                 service_tracker.add("#{sourcename}-udp_source")
               end
 
@@ -491,17 +493,17 @@ EOS
 ##############
             else
               ### Get port matching sourcename from h_tcpudp service/port mapping array
-              port, lowport, highport = ''
+              port, lowport, highport = nil
 
               port = h_tcpudp[sourcename.to_s]
-              lowport, highport = port.split('-')
-              highport = lowport if !highport
-
               ### if port is nil then no match was found, print out some info and move to next record
               if port == nil
-                p "Couldn't find a protocol match: Sourcename: #{sourcename} --> Port: #{port}"
+                p "Couldn't find a protocol match in file: Sourcename: #{sourcename} --> Port: #{port}" if $opts[:verbose]
                 next
               end
+
+              lowport, highport = port.split('-')
+              highport = lowport unless highport
 
               ### Check to see if the associated term defines tcp, udp or icmp
               ### if it defines none of these then we will create objects for
@@ -552,12 +554,13 @@ EOS
           when *%w[icmp-type icmp-type-except]
             port = ''
             port = h_icmp[sourcename.to_s]
-            p "source: #{sourcename}, sourcetype: #{sourcetype}, ICMP Type Code: #{port}"
-            if port
+
+            if port and !service_tracker.include?(port)
               svcconfig += config_fgservice("ICMP-#{sourcename}", port, port, "from term: #{termname}", category, :icmp, :icmp)
+              service_tracker.add("ICMP-#{sourcename}")
 
             else
-              p "service: icmp-type not found"
+              p "service: icmp-type not found" if $opts[:verbose]
               next
 
             end
@@ -567,24 +570,16 @@ EOS
       end
     end
   end
-  p "service tracker"
-  service_tracker.each do |x|
-    p x
+  if $opts[:debug]
+    p "service tracker"
+    service_tracker.each do |x|
+      p x
+    end
   end
 
   ### Return the resulting config to main execution
   return svcconfig
 end
-
-def create_fgpolicy_rules
-
- # $h_filters.each_key do |filtername|
- #   $h_filters[filtername].each_key do |termname|
- #
- #   end
- # end
-end
-
 
 def config_fgservice(servicename, lowport, highport, comment, category, type, proto)
 
@@ -593,25 +588,7 @@ def config_fgservice(servicename, lowport, highport, comment, category, type, pr
 #####################################
 ### TCP and Destination Entry
 ####################################
-if type == :dst && proto == :tcp
-
-fgservice = <<-EOS
-config firewall service custom
-  edit #{servicename}
-    set tcp-portgrange #{lowport} #{highport}
-    set category #{category}
-    set comment "#{comment}"
-  next
-end
-EOS
-
-config += fgservice
-end
-
-####################################
-### UDP and Destination Entry
-####################################
-if type == :dst && proto == :udp
+  if type == :dst && proto == :tcp
 
     fgservice = <<-EOS
 config firewall service custom
@@ -621,17 +598,35 @@ config firewall service custom
     set comment "#{comment}"
   next
 end
-EOS
+    EOS
 
-config += fgservice
+    config += fgservice
+  end
+
+####################################
+### UDP and Destination Entry
+####################################
+  if type == :dst && proto == :udp
+
+    fgservice = <<-EOS
+config firewall service custom
+  edit #{servicename}
+    set udp-portgrange #{lowport} #{highport}
+    set category #{category}
+    set comment "#{comment}"
+  next
 end
+    EOS
+
+    config += fgservice
+  end
 
 ###################################
 ### TCP and Source Entry
 ####################################
-if type == :src && proto == :tcp
+  if type == :src && proto == :tcp
 
-fgservice = <<-EOS
+    fgservice = <<-EOS
 config firewall service custom
   edit #{servicename}
     set tcp-portgrange 1 65535 #{lowport} #{highport}
@@ -639,17 +634,17 @@ config firewall service custom
     set comment "#{comment}"
   next
 end
-EOS
+    EOS
 
-config += fgservice
-end
+    config += fgservice
+  end
 
 ###################################
 ### UDP and Source Entry
 ####################################
-if type == :src && proto == :udp
+  if type == :src && proto == :udp
 
-fgservice = <<-EOS
+    fgservice = <<-EOS
 config firewall service custom
   edit #{servicename}
     set udp-portgrange 1 65535 #{lowport} #{highport}
@@ -657,17 +652,17 @@ config firewall service custom
     set comment "#{comment}"
   next
 end
-EOS
+    EOS
 
-config += fgservice
-end
+    config += fgservice
+  end
 
 ###################################
 ### ICMP Service Entry
 ####################################
-if type == :icmp && proto == :icmp
+  if type == :icmp && proto == :icmp
 
-fgservice = <<-EOS
+    fgservice = <<-EOS
 config firewall service custom
   edit #{servicename}
     set protocol ICMP
@@ -676,14 +671,67 @@ config firewall service custom
     set comment "#{comment}"
   next
 end
-EOS
+    EOS
 
-config += fgservice
-end
+    config += fgservice
+  end
 
   return config
 
 end
+
+def create_fg_intf_policy_rules(interface, filtername)
+
+  filter_tracker = Set.new
+  p $h_filters
+
+  $h_interfaces.each_key do |int|
+    $h_interfaces[int].each_key do |sub|
+     filter = $h_interfaces[int][sub][:ipv4_input_filter]
+     filter_tracker.add($h_interfaces[int][sub][:ipv4_input_filter])
+     p "Filter  #{filter}"
+      $h_filters[filter].each_key do |term|
+        srcs = $h_filters[filter][:source]
+        act = $h_filters[filter][:action]
+      #
+       p "   sources: #{srcs}"
+       p "   action: #{act}"
+      end
+    end
+    filter_tracker.add($h_interfaces[int][sub][:ipv4_input_filter])
+  end
+  # filter_tracker.each do |x|
+  #   p x
+  # end
+# $h_filters[filtername].each_key do |term|
+#   if $h_filters[filtername][term][:action]
+#     action = $h_filters[filtername][term][:action].to_s
+#     p action
+#     src_addresses = get_source_addresses($h_filters[filtername][term])
+#     dst_addresses = get_destination_addresses($h_filters[filtername][term])
+#     services = get_services($h_filters[filtername][term])
+#
+# fwpolicy = <<-EOS
+# config firewall policy
+#   edit 0
+#     set interface #{interface}
+#     set srcaddr #{src_addresses}
+#     set dstaddr #{dst_addresses}
+#     set service #{services}
+#   next
+# end
+# EOS
+#
+#     end
+#    end
+ end
+
+def get_source_addresses(filter)
+  #p filter
+  end
+
+
+
 
 
 
@@ -693,7 +741,7 @@ end
 ### Main
 #########################################
 ### open config file for reading
-filein = File.open opts[:junosin], 'r'
+filein = File.open $opts[:junosin], 'r'
 
 ### Limit execution cycles during testing
 MAX_COUNT = 100_000
@@ -774,13 +822,14 @@ filein.close
 ### Create FG policy & objects
 fgconfig = String.new
 #fgconfig += create_fgpolicy_address_objects
-fgconfig += create_fgpolicy_service_objects
+#fgconfig += create_fgpolicy_service_objects
 #fgconfig += create_fgpolicy_rules
+create_fg_intf_policy_rules('port1', :'DC-BLUE-SW167-EXCEPTION')
 #create_fgpolicy_rules
 #fgconfig += create_fginterfaces
 
 ### Write configuration to output file
-fileout = File.open opts[:fgout], 'w'
+fileout = File.open $opts[:fgout], 'w'
 fileout.write fgconfig
 fileout.close
 
@@ -796,7 +845,7 @@ fileout.close
 #puts $h_filters.to_json
 #JSON.pretty_generate($h_filters).gsub(":", " =>")
 
-unless opts[:nostats]
+unless $opts[:nostats]
   p ''
   p '############ Stats ###############'
   p "Total Lines Procssed............................. #{linecount}"
