@@ -680,62 +680,121 @@ end
 
 end
 
-def create_fg_intf_policy_rules(interface, filtername)
+### Filtertype == one of :ipv4_input_filter, :ipv4_outputfilter,
+### :ipv6_input_filter or :ipv6_output_filter
+def create_fg_intf_policy_rules(filtertype)
 
+  f = Set.new([:ipv4_input_filter, :ipv4_output_filter, :ipv6_input_filter, :ipv6_output_filter])
+  unless f.include?(filtertype)
+    p "create_fg_intf_policy_rules:  filtertype not supported - #{filtertype}"
+  end
+
+  ### Initialize vars, sets, string, hashes, etc
+  filter = String.new
   filter_tracker = Set.new
-  p $h_filters
+  out_srcaddr = String.new
+  out_dstaddr = String.new
+  out_sport = String.new
+  out_dport = String.new
+  protocol = Set.new
 
+  ## For each interface/sub-interface, process each unique filter matching the passed filtertype option
   $h_interfaces.each_key do |int|
     $h_interfaces[int].each_key do |sub|
-     filter = $h_interfaces[int][sub][:ipv4_input_filter]
-     filter_tracker.add($h_interfaces[int][sub][:ipv4_input_filter])
-     p "Filter  #{filter}"
-      $h_filters[filter].each_key do |term|
-        srcs = $h_filters[filter][:source]
-        act = $h_filters[filter][:action]
-      #
-       p "   sources: #{srcs}"
-       p "   action: #{act}"
+      filter = $h_interfaces[int][sub][filtertype]
+      unless filter == nil || filter_tracker.include?(filter)
+        $h_filters[filter].each_key do |term|
+          srcaddr, dstaddr, sport, dport, protocol = get_rule_detail(filtertype, filter, term)
+          srcaddr.each do |addr|
+            out_srcaddr += addr.to_s + " "
+          end
+          dstaddr.each do |addr|
+            out_dstaddr += addr.to_s + " "
+          end
+          sport.each do |port|
+            out_sport += port.to_s + " "
+          end
+          dport.each do |port|
+            out_dport += port.to_s + " "
+          end
+          end
       end
+      filter_tracker.add(filter)
     end
-    filter_tracker.add($h_interfaces[int][sub][:ipv4_input_filter])
   end
-  # filter_tracker.each do |x|
-  #   p x
-  # end
-# $h_filters[filtername].each_key do |term|
-#   if $h_filters[filtername][term][:action]
-#     action = $h_filters[filtername][term][:action].to_s
-#     p action
-#     src_addresses = get_source_addresses($h_filters[filtername][term])
-#     dst_addresses = get_destination_addresses($h_filters[filtername][term])
-#     services = get_services($h_filters[filtername][term])
-#
-# fwpolicy = <<-EOS
-# config firewall policy
-#   edit 0
-#     set interface #{interface}
-#     set srcaddr #{src_addresses}
-#     set dstaddr #{dst_addresses}
-#     set service #{services}
-#   next
-# end
-# EOS
-#
-#     end
-#    end
+  p out_srcaddr
+  p out_dstaddr
  end
 
-def get_source_addresses(filter)
-  #p filter
+### Returns list of source addresses, destination addressess, source ports
+### destination ports and protocols for a requested filter:term.  Requires
+### options filtertype = :ipv4_input_filter, :ipv4_output_filter, ipv6_input_filter
+### ipv6_output_filter.  filter = name of filter (should be type sym),
+# term = name of filter (should be a symbol)
+def get_rule_detail(filtertype, filter, term)
+
+  ### Check filtertype and assign correct global hash ($h_filters or $h_filters6) to filters
+  case filtertype
+    when :ipv4_input_filter
+      filters = $h_filters
+    when :ipv4_output_filter
+      filters = $h_filters
+    when :ipv6_input_filter
+      filters = $h_filters6
+    when :ipv6_output_filter
+      filters = $h_filters6
+    else
+        p "get_rule_detail: filtertype not supported - #{filtertype}" if $opts[:debug]
   end
 
+  ## Initialize vars, sets, etc
+  srcaddr = Set.new
+  dstaddr = Set.new
+  sport = Set.new
+  dport = Set.new
+  protocol = Set.new
 
+  ### Update corresponding hash based on object type from term's sources hash branch
+  filters[filter][term][:source].each do |object, objtype|
 
+    case objtype
+      when :'source-address'
+        srcaddr.add(object)
 
+      when :'destination-address'
+        dstaddr.add(object)
 
+      when :'source-port'
+        sport.add(object)
 
+      when :'destination-port'
+        dport.add(object)
 
+      when :'source-prefix-list'
+        $h_prefix_lists[object].each do |addr|
+          srcaddr.add(addr)
+        end
+
+      when :'destination-prefix-list'
+        $h_prefix_lists[object].each do |addr|
+         dstaddr.add(addr)
+        end
+
+      when *%w[:tcp :udp :icmp]
+        p "***proto***"
+        protocol.add(object)
+    end
+  end
+
+  # filters[filter][term][:protocol].each do |proto|
+  #   protocol.add(proto)
+  # end
+  #pp filters
+  protocol.each do |x|
+    p x
+  end
+  return srcaddr, dstaddr, sport, dport, protocol
+end
 
 #########################################
 ### Main
@@ -824,7 +883,9 @@ fgconfig = String.new
 #fgconfig += create_fgpolicy_address_objects
 #fgconfig += create_fgpolicy_service_objects
 #fgconfig += create_fgpolicy_rules
-create_fg_intf_policy_rules('port1', :'DC-BLUE-SW167-EXCEPTION')
+#create_fg_intf_policy_rules('port1', :'DC-BLUE-SW167-EXCEPTION')
+#create_fg_intf_policy_rules(:ipv4_input_filter)
+create_fg_intf_policy_rules(:ipv4_output_filter)
 #create_fgpolicy_rules
 #fgconfig += create_fginterfaces
 
