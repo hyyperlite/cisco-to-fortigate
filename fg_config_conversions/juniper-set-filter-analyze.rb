@@ -17,7 +17,9 @@ EOS
   opt :debug, 'Turn on detailed messaging', :short => '-d'
   opt :verbose, 'Enable process details', :short => '-v'
   opt :nostats, 'Disable statistical output', :short => '-n'
+  opt :servicecategory, 'FG category for which to assign all created services', :type => :string, :default => 'hyyperconverter'
 }
+
 ##################################################
 ### Methods
 ##################################################
@@ -211,8 +213,16 @@ def process_policy_options(po)
 end
 
 def process_interfaces(int)
+### This method parses the juniper configuration to identify all interfaces/units
+### it then stores the detail of each unique interface/units (aka sub-interface) to a global
+### array $h_interfaces.
+
+  ### if unit is not the 4th field then this specified interface settings we don't care about
+  ### return to main to receive the next line or to move on to another method
   return if int.at(3) != :unit
 
+  ### if the primary interface (not unit) has not already been added as a key to the hash
+  ### go ahead and add it.  Otherwise continue to process unit values.
   unless $h_interfaces.has_key?(int.at(2))
     $h_interfaces[int.at(2)] = Hash.new
   end
@@ -282,6 +292,7 @@ def process_interfaces(int)
 
     $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'intf-address'] = int.at(8)
 
+    ### For other interface parameters, add a key for each under the interface/unit array
     case int.at(11)
       when :'virtual-address'
         $h_interfaces[int.at(2)][int.at(4)][:vrrp][int.at(10)][:'virtual-address'] = int.at(12)
@@ -304,26 +315,57 @@ def process_interfaces(int)
 end
 
 def create_fgpolicy_address_objects
+### Method orchestrations the translation of juniper source-addres, destination-address, prefix,
+### source-prefix and destination-prefix objects into FG address object configuration.
+### Method first assesses whether a particular filter is used by an interface.  If not, the filter
+### is skipped in order to avoid adding unused address objects to FG config
+
   a_addresses = Array.new
   a_prefix_lists = Array.new
   config = ''
+  used = String.new
 
-  $h_filters.each do |filtername,filterarray|
-    $h_filters[filtername].each do |termname,termarray|
-      $h_filters[filtername][termname][:source].each do |sourcename, sourcetype|
-        if sourcetype == :'source-address' || sourcetype == :'destination-address'
+  ### Conbining ipv4 and ipv6 filters to a single hash to process both simultaneously
+  filters = $h_filters.merge($h_filters6)
 
-          # Adding all to new hash in order to remove duplicates
-          a_addresses << sourcename
+  filters.each_key do |filtername|
+
+    used = '0'
+    ### Check to see if filter is used by an interface
+    $h_interfaces.each_key do |int|
+      $h_interfaces[int].each_key do |sub|
+        if $h_interfaces[int][sub][:ipv4_input_filter] == filtername ||\
+        $h_interfaces[int][sub][:ipv6_input_filter] == filtername ||\
+        $h_interfaces[int][sub][:ipv4_output_filter] == filtername ||\
+        $h_interfaces[int][sub][:ipv6_output_filter] == filtername
+          used = '1'
         end
-        if sourcetype == :'source-prefix-list' || sourcetype == :'destination-prefix-list' || sourcetype == :'prefix-list'
-          a_prefix_lists << sourcename
-          a_prefix_lists.uniq.each do |prefixlist|
-            $h_prefix_lists[prefixlist].each do |prefixadds|
-              a_addresses << prefixadds
+      end
+    end
+
+    if used == '0'
+      p "create_fgpolicy_address_objects: filter is not used by interface.  skipping (filtername: #{filtername}"\
+        if $opts[:verbose]
+      next
+    end
+
+    filters[filtername].each_key do |termname|
+      filters[filtername][termname][:source].each do |sourcename, sourcetype|
+          if sourcetype == :'source-address' || sourcetype == :'destination-address'
+
+            # Adding all to new hash in order to remove duplicates
+            a_addresses << sourcename
+          end
+
+          if sourcetype == :'source-prefix-list' || sourcetype == :'destination-prefix-list' || sourcetype == :'prefix-list'
+            a_prefix_lists << sourcename
+            a_prefix_lists.uniq.each do |prefixlist|
+              $h_prefix_lists[prefixlist].each do |prefixadds|
+                a_addresses << prefixadds
+              end
             end
           end
-        end
+
       end
     end
   end
@@ -332,7 +374,7 @@ def create_fgpolicy_address_objects
   a_addresses.uniq.each do |x|
 
     fgaddress = <<-EOS
-config fireawall address
+config firewall address
   edit #{x}
     set type subnet
     set subnet #{x}
@@ -367,11 +409,17 @@ end
 end
 
 def create_fgpolicy_service_objects
+### This method orchestrates the analysis of juniper protocol definitions
+### and translates them to a config file of fortigate service objects
+### By default, this method skips any objects that are in filters which
+### are not used by an interface (aka orphaned)
+### This method calls the config_fgservice method for creating the fg configuration for each object
 
-
+  ### initialize vars
   svcconfig = String.new
-  service_tracker = Set.new             ### create set for tracking if servie already has been created
-  category = 'comcast'
+  svcconfig = '#### Service Objects ####\n'
+  service_tracker = Set.new   # create a set for tracking if service already has been created to avoid duplicates
+  category = $opts[:servicecategory]
 
   ### Open external files with data for mapping protocol port numbers
   ip = File.open 'ip_protocol_nums.txt', 'r'
@@ -408,7 +456,7 @@ def create_fgpolicy_service_objects
   end
 
   ### reverse the keys and values
-  h_icmp = h_icmp.invert
+  #h_icmp = h_icmp.invert # no longer used as i've reversed order in file to allow for duplicate names with same code
 
   ### close the protocol info files
   ip.close
@@ -423,9 +471,35 @@ end
 
 EOS
 
-  $h_filters.each_key do |filtername|
-    $h_filters[filtername].each_key do |termname|
-      $h_filters[filtername][termname][:source].each do |sourcename, sourcetype|
+  ### Merger ipv4 and ipv6 filters to hash "filters" to process both ipv4 and ipv6 in this request
+  filters = $h_filters.merge($h_filters6)
+
+  ### Process service objects for all ipv4 filters first
+  filters.each_key do |filtername|
+    used = String.new
+    used = '0'
+
+    ### Check to make sure that the filter is used by an interface, if not
+    ### skip processing this filter and move to the next.
+    $h_interfaces.each_key do |int|
+      $h_interfaces[int].each_key do |sub|
+        if $h_interfaces[int][sub][:ipv4_input_filter] == filtername ||\
+           $h_interfaces[int][sub][:ipv6_input_filter] == filtername ||\
+           $h_interfaces[int][sub][:ipv4_output_filter] == filtername ||\
+           $h_interfaces[int][sub][:ipv6_output_filter] == filtername
+            used = '1'
+        end
+      end
+    end
+
+    unless used == '1'
+      p "policy_service_objects: filter not used by an interface, skipping: #{filtername}" if $opts[:verbose]
+      next
+    end
+
+
+    filters[filtername].each_key do |termname|
+       filters[filtername][termname][:source].each do |sourcename, sourcetype|
 
         ### Use sourcetype to identify service definitions then modify those as needed to
         ### convert for use in FG config
@@ -450,18 +524,18 @@ EOS
               ### both tcp and udp.  It defines just icmp, we won't worry about the
               ### tcp/udp objects and will process icmp under a different case
               tcp, udp, icmp = nil
-              if $h_filters[filtername][termname][:source].has_key?(:tcp)
+              if filters[filtername][termname][:source].has_key?(:tcp)
                 tcp = 1
               end
 
-              if $h_filters[filtername][termname][:source].has_key?(:udp)
+              if filters[filtername][termname][:source].has_key?(:udp)
                 udp = 1
               end
 
-              if $h_filters[filtername][termname][:source].has_key?(:icmp)
+              if filters[filtername][termname][:source].has_key?(:icmp)
                 icmp = 1
               end
-             if !tcp && !udp && !icmp
+             unless tcp && udp && icmp
                tcp = 1
                udp = 1
              end
@@ -488,9 +562,7 @@ EOS
                 service_tracker.add("#{sourcename}-udp_source")
               end
 
-##############
-##############  Map named protocol term definitions to ports  (aka http, ftp, snmp)
-##############
+            #####  Map named protocol term definitions to ports  (aka http, ftp, snmp)
             else
               ### Get port matching sourcename from h_tcpudp service/port mapping array
               port, lowport, highport = nil
@@ -510,18 +582,18 @@ EOS
               ### both tcp and udp.  It defines just icmp, we won't worry about the
               ### tcp/udp objects and will process icmp under a different case
               tcp, udp, icmp = nil
-              if $h_filters[filtername][termname][:source].has_key?(:tcp)
+              if filters[filtername][termname][:source].has_key?(:tcp)
                 tcp = 1
               end
 
-              if $h_filters[filtername][termname][:source].has_key?(:udp)
+              if filters[filtername][termname][:source].has_key?(:udp)
                 udp = 1
               end
 
-              if $h_filters[filtername][termname][:source].has_key?(:icmp)
+              if filters[filtername][termname][:source].has_key?(:icmp)
                 icmp = 1
               end
-              if !tcp && !udp && !icmp
+              unless tcp && udp && icmp
                 tcp = 1
                 udp = 1
               end
@@ -552,20 +624,23 @@ EOS
 #################
 
           when *%w[icmp-type icmp-type-except]
-            port = ''
-            port = h_icmp[sourcename.to_s]
+            port = String.new
+
+            if /^(\d+)$/ =~ sourcename
+              port = sourcename
+            else
+              port = h_icmp[sourcename.to_s]
+            end
 
             if port and !service_tracker.include?(port)
               svcconfig += config_fgservice("ICMP-#{sourcename}", port, port, "from term: #{termname}", category, :icmp, :icmp)
               service_tracker.add("ICMP-#{sourcename}")
 
-            else
-              p "service: icmp-type not found" if $opts[:verbose]
+            elsif !port
+              p "create_fgpolicy_service_objects: service icmp-type not found port = #{port} sourcename = #{sourcename}"\
+                if $opts[:verbose] || $opts[:debug]
               next
-
             end
-
-          else
         end
       end
     end
@@ -582,6 +657,7 @@ EOS
 end
 
 def config_fgservice(servicename, lowport, highport, comment, category, type, proto)
+### Method creates and returns configuration of a single FG service object
 
   config = String.new
 
@@ -680,58 +756,86 @@ end
 
 end
 
+def create_fg_policy_rules(filtertype)
+### Method orchestrates the creation of FG policy configuration by iterating through
+### all filters and terms stored to the $h_filters and $h_filters6 arrays.
+### This method calls get_rule_detail to retreive src,dst,srcport,dport,protocol,action from each filter/term
+### This method calls config_fwrules to translate the output from get_rule_detail to FG object config
+### This method returns policy configuration for the specified filter type, ipv4/ipv6 input/output
 ### Filtertype == one of :ipv4_input_filter, :ipv4_outputfilter,
 ### :ipv6_input_filter or :ipv6_output_filter
-def create_fg_intf_policy_rules(filtertype)
-
-  f = Set.new([:ipv4_input_filter, :ipv4_output_filter, :ipv6_input_filter, :ipv6_output_filter])
-  unless f.include?(filtertype)
-    p "create_fg_intf_policy_rules:  filtertype not supported - #{filtertype}"
-  end
 
   ### Initialize vars, sets, string, hashes, etc
   filter = String.new
+  fwconfig = String.new
   filter_tracker = Set.new
-  out_srcaddr = String.new
-  out_dstaddr = String.new
-  out_sport = String.new
-  out_dport = String.new
-  protocol = Set.new
+  result = String.new
+  service_negate = String.new
+
+  case filtertype
+    when :ipv4_input_filter
+      fwconfig += "#### Firewall Interface Policy ####\n"
+      fwconfig += "config firewall interface-policy\n"
+      h_filters = $h_filters
+    when :ipv6_input_filter
+      fwconfig += "#### Firewall IPv6 Interface Policy ####\n"
+      fwconfig += "config firewall interface-policy6\n"
+      h_filters = $h_filters6
+    when :ipv4_output_filter
+      fwconfig += "#### Firewall Policy ####\n"
+      fwconfig += "config firewall policy\n"
+      h_filters = $h_filters
+    when :ipv6_output_filter
+      fwconfig += "#### Firewall IPv6 Policy ####\n"
+      fwconfig += "config firewall policy6\n"
+      h_filters = $h_filters6
+    else
+      p "create_fg_intf_policy_rules:  filtertype not supported - #{filtertype}" if $opts[:verbose]
+      return
+  end
 
   ## For each interface/sub-interface, process each unique filter matching the passed filtertype option
+  ## We are iterating through each used filter and checking the terms for compatibility.  If compatible
+  ## then we will go ahead and process/convert to FG config.
   $h_interfaces.each_key do |int|
     $h_interfaces[int].each_key do |sub|
       filter = $h_interfaces[int][sub][filtertype]
-      unless filter == nil || filter_tracker.include?(filter)
-        $h_filters[filter].each_key do |term|
-          srcaddr, dstaddr, sport, dport, protocol = get_rule_detail(filtertype, filter, term)
-          srcaddr.each do |addr|
-            out_srcaddr += addr.to_s + " "
+      continue = ''
+      unless filter == 'nil' || filter == nil || filter_tracker.include?(filter)
+        h_filters[filter].each_key do |term|
+          continue = 'yes'
+          ## check to see if this policy is derived from dscp, forwarding-class, etc. if so, we will skip
+          h_filters[filter][term][:source].each do |object, objtype|
+            continue = objtype if objtype == :dscp || objtype == :'forwarding-class' || objtype == :'tcp-established'
+
+            break unless continue == 'yes'
           end
-          dstaddr.each do |addr|
-            out_dstaddr += addr.to_s + " "
-          end
-          sport.each do |port|
-            out_sport += port.to_s + " "
-          end
-          dport.each do |port|
-            out_dport += port.to_s + " "
-          end
-          end
+        if continue == 'yes'
+          ### The following vars are returned as sets
+          srcaddr, dstaddr, sport, dport, protocol, service_negate, result = get_rule_detail(filtertype, filter, term)
+          action = h_filters[filter][term][:action]
+          fwconfig += config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,\
+                                     service_negate, "#{int}-#{sub}", filter, term)
+        else
+          fwconfig += ''
+          p "create_fg_policy_rules: unsupported source type: #{continue}, skipping: filter: #{filter}, term: #{term}"\
+            if $opts[:verbose] || $opts[:debug]
+        end
+        end
       end
-      filter_tracker.add(filter)
+      #filter_tracker.add(filter)
     end
   end
-  p out_srcaddr
-  p out_dstaddr
+  return fwconfig
  end
 
+def get_rule_detail(filtertype, filter, term)
 ### Returns list of source addresses, destination addressess, source ports
 ### destination ports and protocols for a requested filter:term.  Requires
 ### options filtertype = :ipv4_input_filter, :ipv4_output_filter, ipv6_input_filter
 ### ipv6_output_filter.  filter = name of filter (should be type sym),
-# term = name of filter (should be a symbol)
-def get_rule_detail(filtertype, filter, term)
+### term = name of filter (should be a symbol)
+
 
   ### Check filtertype and assign correct global hash ($h_filters or $h_filters6) to filters
   case filtertype
@@ -748,11 +852,13 @@ def get_rule_detail(filtertype, filter, term)
   end
 
   ## Initialize vars, sets, etc
+  result = ''   ### To pass status back to calling method
   srcaddr = Set.new
   dstaddr = Set.new
   sport = Set.new
   dport = Set.new
   protocol = Set.new
+  serviceNegate = 'false'  ### if type icmp-except need to negate the rule
 
   ### Update corresponding hash based on object type from term's sources hash branch
   filters[filter][term][:source].each do |object, objtype|
@@ -764,36 +870,179 @@ def get_rule_detail(filtertype, filter, term)
       when :'destination-address'
         dstaddr.add(object)
 
+      when :address
+        srcaddr.add(object)
+        dstaddr.add(object)
+
       when :'source-port'
         sport.add(object)
 
       when :'destination-port'
         dport.add(object)
 
+      when :port
+        dport.add(object)
+
       when :'source-prefix-list'
-        $h_prefix_lists[object].each do |addr|
-          srcaddr.add(addr)
-        end
+        srcaddr.add(object)
+
+        ### The following code snipet is no longer used, but can be activated to add each address in the prefix list
+        ### to the dstaddr set.  Instead, we are using the name to reference an address group that should
+        ### have been created for each prefix list
+        # $h_prefix_lists[object].each do |addr|
+        #   srcaddr.add(addr)
+        # end
 
       when :'destination-prefix-list'
-        $h_prefix_lists[object].each do |addr|
-         dstaddr.add(addr)
-        end
+        dstaddr.add(object)
 
-      when *%w[:tcp :udp :icmp]
-        p "***proto***"
+        ### The following code snipet is no longer used, but can be activated to add each address in the prefix list
+        ### to the dstaddr set.  Instead, we are using the name to reference an address group that should
+        ### have been created for each prefix list
+        # $h_prefix_lists[object].each do |addr|
+        #  dstaddr.add(addr)
+        # end
+
+      when :'prefix-list'
+        srcaddr.add(object)
+        dstaddr.add(object)
+
+      when :protocol
         protocol.add(object)
+
+      when :'next-header'
+        protocol.add(object)
+
+      when :'icmp-type'
+        protocol.add(:icmp)
+        dport.add(object)
+
+      when :'icmp-type-except'
+        protocol.add(:icmp)
+        dport.add(object)
+        serviceNegate = 'true'
+
+      else
+        result += "get_rule_detail: object type: #{objtype}, not supported for filter: #{filter}, term: #{term}"
+        p "get_rule_detail: object type: #{objtype}, not supported for filter: #{filter}, term: #{term}" if $opts[:verbose] || $opts[:debug]
     end
   end
 
-  # filters[filter][term][:protocol].each do |proto|
-  #   protocol.add(proto)
-  # end
-  #pp filters
-  protocol.each do |x|
-    p x
+  return srcaddr, dstaddr, sport, dport, protocol, serviceNegate, result
+end
+
+def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action, svc_negate, interface, filter, term)
+### This method translates juniper rule detail passed in (such as srcaddr, dstaddr, dport, action)
+### into FG policy. This method returns the FG firewall policy associated to 1 single filter/term
+
+  ### Currently an input filter (v4 or v6) is being translated to a FG interface policy
+  ### interface policies can only specifically allow traffic (aka no action can be specified)
+  if filtertype == :ipv4_input_filter || filtertype == :ipv6_input_filter
+    unless action == :accept
+      p "config_fwrules: action type must be accept for interface policy" if $opts[:verbose]
+      return ''
+    end
   end
-  return srcaddr, dstaddr, sport, dport, protocol
+
+  if filtertype == :ipv4_output_filter || filtertype == :ipv6_output_filter
+    unless action == :accept || action == :discard
+      p "config_fwrules: action type must be accept or for outbound policy" if $opts[:verbose]
+      return ''
+    end
+  end
+
+  ### Initialize local vars, strings, hashes, sets, arrays
+  fwconfig = String.new
+  fwconfig += "### From Filter: #{filter}, Term: #{term}\n"
+  fwconfig += "  edit 0\n"
+  srcaddr_out = String.new
+  dstaddr_out = String.new
+  service_out = String.new
+
+  ### Put the srcaddr and dstaddrs in a string format acceptable for applying
+  ### to a FG firewall policy as srcaddr or dstaddr setting. (aka no punctuation, spaces only)
+  if srcaddr.count > 0
+    srcaddr.each do |x|
+      srcaddr_out  += x.to_s + ' '
+    end
+  else
+    srcaddr_out = 'all'
+  end
+  if dstaddr.count > 0
+    dstaddr.each do |x|
+      dstaddr_out += x.to_s + ' '
+    end
+  else
+    dstaddr_out = 'all'
+  end
+
+  ### For input filters we are creating an inbound interface policy
+  if filtertype == :ipv4_input_filter || filtertype == :ipv6_input_filter
+    fwconfig += "    set interface #{interface}\n"
+    fwconfig += "    set srcaddr #{srcaddr_out}\n"
+    fwconfig += "    set dstaddr #{dstaddr_out}\n"
+  elsif filtertype == :ipv4_output_filter || filtertype == :ipv6_output_filter
+    fwconfig += "    set srcintf any\n"
+    fwconfig += "    set dstintf #{interface}\n"
+    fwconfig += "    set srcaddr #{srcaddr_out}\n"
+    fwconfig += "    set dstaddr #{dstaddr_out}\n"
+    fwconfig += "    set action  #{action}\n"
+    fwconfig += "    set schedule always\n"
+  else
+    p "config_fwrules: filtertype not supported, skipping #{filtertype}"
+  end
+
+  if protocol.include?(:tcp)
+    dport.each do |x|
+      service_out += "#{x}-tcp "
+    end
+    sport.each do |x|
+      service_out += "#{x}-tcp_source "
+    end
+  end
+  if protocol.include?(:udp)
+    dport.each do |x|
+      service_out += "#{x}-udp "
+    end
+    sport.each do |x|
+      service_out += "#{x}-udp_source "
+    end
+  end
+
+  ### If no protocol is specified in the term, then we will add tcp and udp.
+  if !(protocol.include?(:tcp) || protocol.include?(:udp)  || protocol.include?(:icmp))
+    dport.each do |x|
+      service_out += "#{x}-tcp "
+    end
+    sport.each do |x|
+      service_out += "#{x}-tcp_source "
+    end
+    dport.each do |x|
+      service_out += "#{x}-udp "
+    end
+    sport.each do |x|
+      service_out += "#{x}-udp_source "
+    end
+    elsif (protocol.include?(:tcp) || protocol.include?(:udp) || protocol.include?(:icmp)) &&\
+           (dport.count == 0 && sport.count == 0)
+    protocol.each do |x|
+     service_out += "#{x.to_s.upcase} "
+    end
+    elsif protocol.include?(:icmp) && !(protocol.include?(:tcp) || protocol.include?(:udp))
+      dport.each do |x|
+        service_out += "ICMP-#{x} "
+      end
+  end
+
+  service_out = 'ALL' if service_out == ''
+  fwconfig += "    set service #{service_out} \n"
+
+  if svc_negate == 'true'
+    fwconfig += "    set service-negate enable \n"
+  end
+
+  fwconfig += "  next\nend\n"
+  return fwconfig
 end
 
 #########################################
@@ -848,7 +1097,7 @@ $interface_count = 0
 $vrrp_group_count = 0
 
 
-### Read/process configuration into usable objects
+### Read/process configuration into array objects
 filein.each_line do |line|
   linecount += 1
   line = line.split
@@ -856,14 +1105,20 @@ filein.each_line do |line|
   case line.at(1)
 
     ###  When line defines an interface take this action
+    ### this will parse all interface/unit definitions into
+    ### array $h_interfaces
     when :interfaces
       process_interfaces line
 
     ### When line defines firewall take this action
+    ### this will parse all firewall definitions into
+    ### array $h_filters (ipv4 terms) or $h_filters6 (ipv6 terms)
     when :firewall
       process_firewall line
 
     ### When line defines policy-options take this action
+    ### This will parse policy-options.  Specifically looking for
+    ### prefix-lists and will store those in $h_prefixlists
     when :'policy-options'
       process_policy_options line
 
@@ -879,13 +1134,14 @@ end
 filein.close
 
 ### Create FG policy & objects
-fgconfig = String.new
+fgconfig = String.new    ### this should never be commented out
+
 #fgconfig += create_fgpolicy_address_objects
 #fgconfig += create_fgpolicy_service_objects
-#fgconfig += create_fgpolicy_rules
-#create_fg_intf_policy_rules('port1', :'DC-BLUE-SW167-EXCEPTION')
-#create_fg_intf_policy_rules(:ipv4_input_filter)
-create_fg_intf_policy_rules(:ipv4_output_filter)
+#fgconfig += create_fg_policy_rules(:ipv4_input_filter)
+#fgconfig += create_fg_policy_rules(:ipv4_output_filter)
+#fgconfig += create_fg_policy_rules(:ipv6_input_filter)
+fgconfig += create_fg_policy_rules(:ipv6_output_filter)
 #create_fgpolicy_rules
 #fgconfig += create_fginterfaces
 
@@ -899,6 +1155,7 @@ fileout.close
 #### STDOUT Outputs
 ########################
 #pp $h_filters
+pp $h_filters[:'SP-DIGITALTV-CONTROL']
 #pp $h_filters6
 #pp $h_prefix_lists
 #pp $h_policy_statements
