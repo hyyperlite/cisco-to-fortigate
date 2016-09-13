@@ -1,8 +1,17 @@
-require 'trollop'
+### Converts Junos Router filters/terms to FortiGate 5.4 address objects, service objects and policies
+### Only tested with config file from Junos 11.4R7.5 but may work with others
+### currently does not support converting the following:
+###  * dscp terms  (currently ignored)
+###  * converting forwarding-classes
+###  * no qos/class of service (aka fg traffic shaping translation)
+###  * VPLS policies are currently ignored
+###  * because converting from stateless to stateful device, tcp-established terms are ignored
+
+require 'trollop' ## must install gem
 require 'pp'
 require 'json'
 require 'set'
-require 'ipaddress'
+require 'ipaddress' ## must install gem
 
 #### Handle Input Options
 $opts = Trollop::options {
@@ -19,18 +28,21 @@ EOS
   opt :verbose, 'Enable process details', :short => '-v'
   opt :nostats, 'Disable statistical output', :short => '-n'
   opt :servicecategory, 'Category to assign service objects to', :type => :string, :default => 'converted'
-  opt :v4filtersin, 'Process ipv4 input filters'
-  opt :v4filtersout, 'Process ipv4 output filters'
-  opt :v6filtersin, 'Process ipv6 input filters'
-  opt :v6filtersout, 'Process ipv6 output filters'
+  opt :v4inputfilters, 'Create FG configuration for v4 input filters'
+  opt :v4outputfilters, 'Create FG configuration for v4 output filters'
+  opt :v6inputfilters, 'Create FG configuration for v6 input filters'
+  opt :v6outputfilters, 'Create FG configuration for v6 output filters'
+  opt :skipaddresses, 'Do not create fg configuration for address objects'
+  opt :skipservices, 'Do not create fg configuraton for service objects'
   opt :map2sub, 'For Comcast, map policies with dstaddr \'any\', to subnet of egress intf'
-  opt :mergetozone, 'For Comcast, merge policies from interfaces to zones using supplied file containing mappings',\
+  opt :interfacemapout, 'For outputfilteres map output juniper intf to fg interface or zone using supplied map file',\
         :type => :string
 }
 ### Argument Checks
 Trollop::die :junosin, ",#{Dir.pwd}/#{$opts[:junosin]} does not exist" unless File.exist?($opts[:junosin])
-Trollop::die :mergetozone, "#{Dir.pwd}/#{$opts[:mergetozone]} does not exit"\
-              unless File.exist?($opts[:mergetozone]) if $opts[:mergetozone]
+
+Trollop::die :interfacemapout, ", #{Dir.pwd}/#{$opts[:interfacemapout]} does not exist"\
+              unless File.exist?($opts[:interfacemapout]) if $opts[:interfacemapout]
 
 ##################################################
 ### Methods
@@ -791,12 +803,12 @@ def create_policy(filtertype)
   service_negate = String.new
   h_ints_to_process = Hash.new
 
-  ### At run time, a list of interface to zone mappings may be specified. using --mergetozone.
+  ### At run time, a list of interface to zone mappings may be specified. using --interfacemapout.
   ### When specified, only the interfaces specified will have corresponding policies created.
-  if $opts[:mergetozone]
+  if $opts[:interfacemapout]
 
     ### open the file with list of interfaces to process, and zone to map each to
-    intsfile = File.open($opts[:mergetozone], 'r')
+    intsfile = File.open($opts[:interfacemapout], 'r')
 
     intsfile.each_line do |x|
       key, val = x.split
@@ -834,14 +846,14 @@ def create_policy(filtertype)
   ## then we will go ahead and process/convert to FG config.
   $h_interfaces.each_key do |int|
     $h_interfaces[int].each_key do |sub|
-      if ($opts[:mergetozone] && h_ints_to_process.has_key?("#{int}-#{sub}")) || !$opts[:mergetozone]
+      if ($opts[:interfacemapout] && h_ints_to_process.has_key?("#{int}-#{sub}")) || !$opts[:interfacemapout]
         filter = $h_interfaces[int][sub][filtertype]
 
         ruletype = ''    # for supportability checks
         filterref = ''   # for referenced filters (aka linked filters)
 
-        ### if mergetozone then we will change the dst interace to zone name supplied by file
-        if $opts[:mergetozone]
+        ### if interfacemapout option specified then we will change the dst interace to zone name supplied by file
+        if $opts[:interfacemapout]
           interface = h_ints_to_process["#{int}-#{sub}"]
         else
           interface = "#{int}-#{sub}"
@@ -857,16 +869,26 @@ def create_policy(filtertype)
               ## call action_rule_support_type which will call the right methods to build the fg config
               ## based on the juniper filter/term detail, including handling nexted filters/terms
               ## will return the completed FG config for that filter/term
-              fwconfig += action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter, term, interface, int, sub)
+              fwconfig += action_rule_support_type(ruletype,\
+                                                   filterref,\
+                                                   h_filters,\
+                                                   filtertype,\
+                                                   filter,\
+                                                   term,\
+                                                   interface,\
+                                                   int,\
+                                                   sub)
             end
 
           else
-            p "create_fg_policy_rules: filter \"#{filter} referenced by interface does not exist for #{int}-#{sub}" if $opts[:debug] || $opts[:verbose]
+            p "create_fg_policy_rules: filter \"#{filter} referenced by interface does not exist for #{int}-#{sub}"\
+              if $opts[:debug] || $opts[:verbose]
           end
 
         end
       else
-        p "Skipping interface #{int}-#{sub} due to, is not included in --mergetozone file" if $opts[:debug] || $opts[:verbose]
+        p "Skipping interface #{int}-#{sub} due to, is not included in --interfacemapout file"\
+if $opts[:debug] || $opts[:verbose]
       end
     end
   end
@@ -909,7 +931,19 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
 
     ### Using provided rule detail config_fwrules will return the FG configuration for "normal" rules
     ### this includes determining interfaces vs policy based rules
-    fwconfig += config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,service_negate, interface, int, sub, filter, term)
+    fwconfig += config_fwrules(filtertype,\
+                               srcaddr,\
+                               dstaddr,\
+                               sport,\
+                               dport,\
+                               protocol,\
+                               action,\
+                               service_negate,\
+                               interface,\
+                               int,\
+                               sub,\
+                               filter,\
+                               term)
 
   elsif ruletype == :filter
 
@@ -917,12 +951,21 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
       h_filters[filterref].each_key do |termref|
 
         refruletype, reffilterref = check_rule_support_type(filterref, termref, h_filters)
-        fwconfig += action_rule_support_type(refruletype, reffilterref, h_filters, filtertype, filter, term, interface, int, sub)
-
+        fwconfig += action_rule_support_type(refruletype,\
+                                             reffilterref,\
+                                             h_filters,\
+                                             filtertype,\
+                                             filter,\
+                                             term,\
+                                             interface,\
+                                             int,\
+                                             sub)
       end
 
     else
-      p "action_rule_support_type: nested filter reference #{filterref} does not exist, referenced by filter: #{filter}, term: #{term} "
+      p "action_rule_support_type: nested filter reference #{filterref} does not exist, referenced by filter:\\
+        #{filter}, term: #{term} "
+
       fwconfig += ''
     end
 
@@ -932,6 +975,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
 
     fwconfig += ''
   end
+
   return fwconfig += ''
 end
 
@@ -1030,14 +1074,16 @@ def get_rule_detail(filtertype, filter, term)
 
       else
         result += "get_rule_detail: object type: #{objtype}, not supported for filter: #{filter}, term: #{term}"
-        p "get_rule_detail: object type: #{objtype}, not supported for filter: #{filter}, term: #{term}" if $opts[:verbose] || $opts[:debug]
+        p "get_rule_detail: object type: #{objtype}, not supported for filter: #{filter}, term: #{term}"\
+          if $opts[:verbose] || $opts[:debug]
     end
   end
 
   return srcaddr, dstaddr, sport, dport, protocol, svcnegate, result
 end
 
-def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action, svc_negate, interface, int, sub, filter, term)
+def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action, svc_negate, interface, int,\
+                   sub, filter, term)
 ### This method translates juniper rule detail passed in (such as srcaddr, dstaddr, dport, action)
 ### into FG policy. This method returns the FG firewall policy associated to 1 single filter/term
 
@@ -1055,8 +1101,9 @@ def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,
 
   if filtertype == :ipv4_output_filter || filtertype == :ipv6_output_filter
     unless action == :accept || action == :discard
-      p "config_fwrules: action type must be accept or discard, was #{action} for outbound policy filter: #{filter}, term: #{term}"\
-       if $opts[:verbose]
+      p "config_fwrules: action type must be accept or discard, was #{action} for outbound policy filter: #{filter},\\
+         term: #{term}" if $opts[:verbose]
+
       return ''
     end
   end
@@ -1083,8 +1130,8 @@ def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,
       dstaddr_out += x.to_s + ' '
     end
   else
-    if $opts[:mergetozone]
-      ### When mergetozone enabled, any rules with dstaddr any will be changed from any to the subnet
+    if $opts[:map2sub]
+      ### When map2sub enabled, any rules with dstaddr any will be changed from any to the subnet
       ### that the associated interfaces IP is in
       case filtertype
         when :ipv4_output_filter
@@ -1274,12 +1321,12 @@ filein.close
 ### Create FG policy & objects
 fgconfig = String.new    ### this should never be commented out
 
-fgconfig += create_address_objects
-fgconfig += create_service_objects
-#fgconfig += create_policy(:ipv4_input_filter)
-fgconfig += create_policy(:ipv4_output_filter)
-#fgconfig += create_policy(:ipv6_input_filter)
-#fgconfig += create_policy(:ipv6_output_filter)
+fgconfig += create_address_objects unless $opts[:skipaddresses]
+fgconfig += create_service_objects unless $opts[:skipservices]
+fgconfig += create_policy(:ipv4_input_filter) if $opts[:v4inputfilters]
+fgconfig += create_policy(:ipv4_output_filter) if $opts[:v4outputfilters]
+fgconfig += create_policy(:ipv6_input_filter) if $opts[:v6inputfilters]
+fgconfig += create_policy(:ipv6_output_filter) if $opts[:v6outputfilters]
 
 #fgconfig += create_fginterfaces
 
@@ -1293,32 +1340,33 @@ fileout.close
 #### STDOUT Outputs
 ########################
 
+###
 ### Pretty print filter hashes
-pp $h_filters if $opts[:v4filterdetails]
-pp $h_filters6 if $opts[:v6filterdetails]
+###
+pp $h_filters if $opts[:v4filterprint]
+pp $h_filters6 if $opts[:v6filterprint]
 
-### Print list of each filter (optional all or used)
-if $opts[:listfiltersv4] == 'all'
-   $h_filters.each_key do |x|
-     p x
-   end
-elsif $opts[:listfiltersv4]== 'used'
-  $h_interfaces.each_key do |int|
-    $h_interfaces[int].each_key do |sub|
-      p $h_interfaces[int][sub][:ipv4_input_filter]
-      p $h_interfaces[int][sub][:ipv4_output_filter]
-    end
-  end
- end
-# if $opts[:listfiltersv6] == 'all'
-#   $h_filters6.each_key do |x|
-#     p x
+# ### Print list of each filter (optional all filters or used filters)
+# if $opts[:v4filterprint] == 'all' || 'allin' || 'allout'
+#    $h_filters.each_key do |x|
+#      p x
+#    end
+# elsif $opts[:v4filterprint]== 'used' || 'usedin' || 'usedout'
+#   $h_interfaces.each_key do |int|
+#     $h_interfaces[int].each_key do |sub|
+#       p $h_interfaces[int][sub][:ipv4_input_filter]
+#       p $h_interfaces[int][sub][:ipv4_output_filter]
+#     end
 #   end
-# end
-#pp $h_filters6
-#pp $h_prefix_lists
-#pp $h_policy_statements
-# pp $h_interfaces
+#  end
+#  if $opts[:v6filterprint] == 'all' || 'allin' || 'allout'
+#    $h_filters6.each_key do |x|
+#      p x
+#    end
+#  end
+# pp $h_interfaces if $opts[:interfaceprint]
+
+### Saved for future use if JSON needed
 #puts $h_filters.to_json
 #JSON.pretty_generate($h_filters).gsub(":", " =>")
 
