@@ -951,6 +951,7 @@ def create_policy(filtertype)
       end
     end
   end
+  fwconfig += "end \n"
   return fwconfig
  end
 
@@ -1324,8 +1325,7 @@ def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,
 
   end
 
-
-  fwconfig += "  next\nend\n"
+  fwconfig += "  next\n"
   return fwconfig
 end
 
