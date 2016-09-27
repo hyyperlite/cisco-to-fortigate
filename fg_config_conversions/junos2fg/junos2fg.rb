@@ -167,7 +167,7 @@ def process_firewall(fw)
         end
       end
 
-    # If this is a vpls firewall filter, for now we are noting it in output but taking no action
+    # If this is a VPLS firewall filter, for now we are noting it in output but taking no action
     # as vpls isn't easily translatable to FortiGate
     elsif fw.at(3) == :vpls && fw.at(4) == :filter
       p 'process_firewall: no action taken on vpls filters' if $opts[:verbose]
@@ -362,7 +362,6 @@ def process_map_interface
   intsfile.each_line do |x|
     key, val = x.split
     h_ints_map_out[key] = val
-    #p "#{key}, #{val}"
   end
 
   intsfile.close
@@ -396,7 +395,7 @@ def create_address_objects
   a_addresses = Array.new
   a_prefix_lists = Array.new
   config = String.new
-  filterused = '0'
+  filterused = nil
 
 
   # Combining ipv4 and ipv6 filters to a single hash to process both simultaneously
@@ -407,10 +406,7 @@ def create_address_objects
     # check_if_filter_used returns 1 if this filter is used by an interface 0 if not
     filterused = check_if_filter_used(filtername)
 
-
-    #p "Final: used = #{filtername}" if filterused == '1'
-
-    unless filterused == '1'
+    unless filterused
       p "create_fgpolicy_address_objects: filter is not used by an interface. skipping filtername: #{filtername}"\
         if $opts[:debug]
       next
@@ -479,7 +475,7 @@ def create_address_objects
     config += fggroups
   end
 
-  # Return this pieces of FG config to main for addtional methods to add to it
+  # Return this pieces of FG config to main for additional methods to add to it
   config += "end\n\n"
 
 end
@@ -489,7 +485,7 @@ end
 def check_if_filter_used(filtername)
 
   # define vars
-  filterused = '0'
+  filterused = nil
 
   # Check to see if filter is used by an interface
   $h_interfaces.each_key do |int|
@@ -498,21 +494,19 @@ def check_if_filter_used(filtername)
            $h_interfaces[int][sub][:ipv6_input_filter] == filtername ||\
            $h_interfaces[int][sub][:ipv4_output_filter] == filtername ||\
            $h_interfaces[int][sub][:ipv6_output_filter] == filtername
-        filterused = '1'
+        filterused = true
       end
 
       # added in to support new request to process specific interfaces
       # for performance this check should occur before parsing all interfaces above
       # but for expediency it is here right now.  Will move later  *update*
-      if $opts[:interfacemapout] && filterused == '1'
+      if $opts[:interfacemapout] && filterused
         $h_ints_map_out.each_key do |x|
-          filterused = '0' unless x == "#{int}-#{sub}"
-          return '1' if filterused == '1'
-          #p "it's used:"
-          #p "  filter: #{filtername}, int: #{int}-#{sub}, map: #{x}"
+          filterused = nil unless x == "#{int}-#{sub}"
+          return filterused if filterused
         end
       end
-      return '1' if filterused == '1'
+      return filterused
     end
   end
 end
@@ -530,7 +524,7 @@ def create_service_objects
   svcconfig += "config firewall service custom"
   service_tracker = Set.new   # create a set for tracking if service already has been created to avoid duplicates
   category = $opts[:servicecategory]
-  filterused = String.new
+  filterused = nil
 
   # Open external files with data for mapping protocol port numbers
   ip = File.open 'reference/ip_protocol_nums.txt', 'r'
@@ -574,9 +568,6 @@ def create_service_objects
     h_icmp_msg[num] = name
   end
 
-  # reverse the keys and values
-  #h_icmp = h_icmp.invert # no longer used as i've reversed order in file to allow for duplicate names with same code
-
   # close the protocol info files
   ip.close
   tcpudp.close
@@ -598,7 +589,7 @@ EOS
   filters.each_key do |filtername|
     filterused = check_if_filter_used(filtername)
 
-    unless filterused == '1'
+    unless filterused
       p "policy_service_objects: filter not used by an interface, skipping: #{filtername}" if $opts[:verbose]
       next
     end
@@ -877,6 +868,7 @@ def create_policy(filtertype)
   fwconfig = String.new
   result = String.new
   service_negate = String.new
+  newaddresses = Set.new
 
   case filtertype
     when :ipv4_input_filter
@@ -927,8 +919,9 @@ def create_policy(filtertype)
 
               # Call action_rule_support_type which will call the right methods to build the fg config
               # based on the juniper filter/term detail, including handling nested filters/terms
-              # will return the completed FG config for that filter/term
-              fwconfig += action_rule_support_type(ruletype,\
+              # will return the completed FG config for that filter/term.  Also, if int2sub option is enabled
+              # may return a list of subnets that need to be additionally created as address objects.
+              newconfig, newaddobj = action_rule_support_type(ruletype,\
                                                    filterref,\
                                                    h_filters,\
                                                    filtertype,\
@@ -937,6 +930,11 @@ def create_policy(filtertype)
                                                    interface,\
                                                    int,\
                                                    sub)
+
+              fwconfig += newconfig
+
+              # Add any new address objects that need to be configured to a set
+              newaddresses << newaddobj if newaddobj
             end
 
           else
@@ -952,6 +950,29 @@ def create_policy(filtertype)
     end
   end
   fwconfig += "end \n"
+
+  # If new address objects need to be created due that here, and insert them in the config ahead of creating
+  # rules that will need to use these objects.
+  if newaddresses.count > 0
+    newconfig = "### Additional FW Addresses from derived subnets ###"
+    newconfig += "config firewall address\n"
+
+    newaddresses.each do |x|
+      p "there are new addresses"
+      newconfig += <<-EOS
+  edit #{x}
+    set type subnet
+    set subnet #{x}
+    set comment "Derived subnet from interface IP due to rule with dst of any"
+  next
+    EOS
+    end
+
+    newconfig += "end\n"
+
+    fwconfig = newconfig + fwconfig
+  end
+
   return fwconfig
  end
 
@@ -995,7 +1016,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
 
     # Using provided rule detail config_fwrules method will return the FG configuration for "normal" rules
     # this includes determining interfaces vs policy based rules
-    fwconfig += config_fwrules(filtertype,\
+    newconfig, newaddobj = config_fwrules(filtertype,\
                                srcaddr,\
                                dstaddr,\
                                sport,\
@@ -1008,7 +1029,24 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
                                sub,\
                                filter,\
                                term,
-                               dscp )
+                               dscp)
+
+    fwconfig += newconfig
+
+#     if newaddobj
+#
+#       fwconfig = <<-EOS
+# config firewall address
+#   edit #{newaddobj}
+#     set type subnet
+#     set subnet #{newaddobj}
+#     set comment "derived from dst interface IP due to dst any in filter-term: #{filter}-#{term}"
+# end
+#   #{fwconfig}
+#     EOS
+#
+#       p "new address object"
+#     end
 
   ### If the ruletype is a filter, this is referencing a nested filter so we will supply this filter back up to
   ### check_rule_support_type method which will in turn call this method if it contains supported filters/rules
@@ -1025,7 +1063,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
 
         # Now that we know the rule type. Call action_rule_support_type method passing the ruletype information
         # and the appropriate actions will be taken to configure this rule type. by finally calling config_fwrules
-        fwconfig += action_rule_support_type(refruletype,\
+          newconfig, newaddobj = action_rule_support_type(refruletype,\
                                              reffilterref,\
                                              h_filters,\
                                              filtertype,\
@@ -1035,10 +1073,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
                                              int,\
                                              sub)
 
-        # fwconfig += newconfig
-        # unless newaddobj == 'nil'
-        #   fwconfig = "\nconfig firewall address\n  edit #{newaddobj}\n    set subnet #{newaddobj}\n end\n\n" + fwconfig
-        # end
+        fwconfig += newconfig
       end
 
 
@@ -1059,7 +1094,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
     fwconfig += ''
   end
 
-  return fwconfig += ''
+  return fwconfig += '', newaddobj
 end
 
 # Returns list of source addresses, destination addressess, source ports
@@ -1185,6 +1220,9 @@ def config_fwrules(filtertype,\
                    term,\
                    dscp)
 
+  # Initialize
+  newaddobj = false
+
   # Currently an "input filter" (v4 or v6) is being translated to a FG interface policy
   # interface policies can only specifically allow traffic (aka no action can be specified)
   if filtertype == :ipv4_input_filter || filtertype == :ipv6_input_filter
@@ -1241,11 +1279,13 @@ def config_fwrules(filtertype,\
               unless $h_interfaces[int.to_sym][sub.to_sym][:vrrp][x][:'intf-address'] == nil
                 intip = IPAddress $h_interfaces[int.to_sym][sub.to_sym][:vrrp][x][:'intf-address'].to_s
                 dstaddr_out = intip.network.to_s + '/' + intip.prefix.to_s
+                newaddobj = true
               end
             end
           else
             intip = IPAddress $h_interfaces[int.to_sym][sub.to_sym][:address_v4_primary].to_s
             dstaddr_out = intip.network.to_s + '/' + intip.prefix.to_s
+            newaddobj = true
           end
         when :ipv6_output_filter
           if $h_interfaces[int.to_sym][sub.to_sym][:'address_v6_primary'] == nil
@@ -1253,11 +1293,13 @@ def config_fwrules(filtertype,\
               unless $h_interfaces[int.to_sym][sub.to_sym][:vrrp][x][:'intf-address'] == nil
                 intip = IPAddress $h_interfaces[int.to_sym][sub.to_sym][:vrrp][x][:'intf-address'].to_s
                 dstaddr_out = intip.network.to_s + '/' + intip.prefix.to_s
+                newaddobj = true
               end
             end
           else
             intip = IPAddress $h_interfaces[int.to_sym][sub.to_sym][:address_v6_primary].to_s
             dstaddr_out = intip.network.to_s + '/' + intip.prefix.to_s
+            newaddobj = true
           end
         else
           dstaddr_out = 'all'
@@ -1350,12 +1392,12 @@ def config_fwrules(filtertype,\
     fwconfig += "    set diffserv-forward enable \n"
     fwconfig += "    set diffserv-reverse enable \n"
     end
-
   end
 
   fwconfig += "  next\n"
-  return fwconfig, dstaddr_out if $opts[:map2sub]
-  return fwconfig, 'nil'
+
+  return fwconfig, dstaddr_out if newaddobj == true
+  return fwconfig, nil
 end
 
 #########################################
@@ -1456,7 +1498,6 @@ fgconfig += create_policy(:ipv4_input_filter) if $opts[:v4inputfilters]
 fgconfig += create_policy(:ipv4_output_filter) if $opts[:v4outputfilters]
 fgconfig += create_policy(:ipv6_input_filter) if $opts[:v6inputfilters]
 fgconfig += create_policy(:ipv6_output_filter) if $opts[:v6outputfilters]
-
 # fgconfig += create_fginterfaces
 
 # Write configuration to output file
