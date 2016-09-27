@@ -1,7 +1,6 @@
 # Converts Junos Router filters/terms to FortiGate 5.4 address objects, service objects and policies
 # Only tested with config file from Junos 11.4R7.5 but may work with others
 # currently does not support converting the following:
-#  * dscp terms  (currently ignored)
 #  * converting forwarding-classes
 #  * no qos/class of service (aka fg traffic shaping translation)
 #  * VPLS policies are currently ignored
@@ -405,6 +404,7 @@ def create_address_objects
 
   filters.each_key do |filtername|
 
+    # check_if_filter_used returns 1 if this filter is used by an interface 0 if not
     filterused = check_if_filter_used(filtername)
 
 
@@ -990,9 +990,10 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
     # Call get_rule_detail to provide most relevant config detail related to this filter/term
     # The following are returned as sets from the get_rule_detail method
     srcaddr, dstaddr, sport, dport, protocol, service_negate, result, dscp = get_rule_detail(filtertype, filter, term)
-    action = h_filters[filter][term][:action]
 
-    # Using provided rule detail config_fwrules will return the FG configuration for "normal" rules
+    action = h_filters[filter][term][:action]  # *update* this 'action' set should be moved to get_rule_detail method
+
+    # Using provided rule detail config_fwrules method will return the FG configuration for "normal" rules
     # this includes determining interfaces vs policy based rules
     fwconfig += config_fwrules(filtertype,\
                                srcaddr,\
@@ -1006,15 +1007,24 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
                                int,\
                                sub,\
                                filter,\
-                               term,\
-                               dscp)
+                               term,
+                               dscp )
 
+  ### If the ruletype is a filter, this is referencing a nested filter so we will supply this filter back up to
+  ### check_rule_support_type method which will in turn call this method if it contains supported filters/rules
   elsif ruletype == :filter
 
+    # Check to make sure that the nested filter referenced does in fact exist
     if h_filters.has_key?(filterref)
       h_filters[filterref].each_key do |termref|
 
+        # Call check_rule_support_type method to determine the rule type and therefore parameters for actions to be
+        # taken next.  returns the rule type, and... if it is a nested rule, returns the reference to the nested
+        # filter name so that that filter can be processed in place of the rule currently being processed.
         refruletype, reffilterref = check_rule_support_type(filterref, termref, h_filters)
+
+        # Now that we know the rule type. Call action_rule_support_type method passing the ruletype information
+        # and the appropriate actions will be taken to configure this rule type. by finally calling config_fwrules
         fwconfig += action_rule_support_type(refruletype,\
                                              reffilterref,\
                                              h_filters,\
@@ -1024,8 +1034,15 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
                                              interface,\
                                              int,\
                                              sub)
+
+        # fwconfig += newconfig
+        # unless newaddobj == 'nil'
+        #   fwconfig = "\nconfig firewall address\n  edit #{newaddobj}\n    set subnet #{newaddobj}\n end\n\n" + fwconfig
+        # end
       end
 
+
+    # If the nested filter referenced does not exist then output error to stdout and return empty config
     else
       p "action_rule_support_type: nested filter reference #{filterref} does not exist, referenced by filter:\\
         #{filter}, term: #{term} "
@@ -1033,9 +1050,8 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
       fwconfig += ''
     end
 
-  elsif ruletype == :dscp
-    p 'This is a DSCP rule'
-
+  # If not ruletype or :normal or :filter then we do not currently support it.  Will print error and return
+  # empty fg configuration
   else
     p "action_rule_support_type: unsupported source type: #{continue}, skipping: filter: #{filter}, term: #{term}"\
       if $opts[:verbose] || $opts[:debug]
@@ -1153,11 +1169,23 @@ def get_rule_detail(filtertype, filter, term)
 end
 
 # This method translates juniper rule detail passed in (such as srcaddr, dstaddr, dport, action)
-# into FG policy. This method returns the FG firewall policy associated to 1 single filter/term
-def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action, svc_negate, interface, int,\
-                   sub, filter, term, dscp)
+# into FG policy. This method returns the FG firewall policy associated to 1 single filter term
+def config_fwrules(filtertype,\
+                   srcaddr,\
+                   dstaddr,\
+                   sport,\
+                   dport,\
+                   protocol,\
+                   action,\
+                   svc_negate,\
+                   interface,\
+                   int,\
+                   sub,\
+                   filter,\
+                   term,\
+                   dscp)
 
-  # Currently an input filter (v4 or v6) is being translated to a FG interface policy
+  # Currently an "input filter" (v4 or v6) is being translated to a FG interface policy
   # interface policies can only specifically allow traffic (aka no action can be specified)
   if filtertype == :ipv4_input_filter || filtertype == :ipv6_input_filter
     unless action == :accept
@@ -1166,8 +1194,8 @@ def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,
     end
   end
 
-  # if action not specified then assume it is accept.   This should be verified.
-  # action = :accept if action == ''
+  # if action not specified then assume it is accept.   *update* This should be verified.
+  action = :accept if action == ''
 
   if filtertype == :ipv4_output_filter || filtertype == :ipv6_output_filter
     unless action == :accept || action == :discard
@@ -1326,7 +1354,8 @@ def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action,
   end
 
   fwconfig += "  next\n"
-  return fwconfig
+  return fwconfig, dstaddr_out if $opts[:map2sub]
+  return fwconfig, 'nil'
 end
 
 #########################################
