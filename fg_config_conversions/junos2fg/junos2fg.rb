@@ -383,6 +383,20 @@ def process_map_dscp
   end
 
   dscpfile.close
+
+  # open junos config file to map dscp aliases that have been defined.  We do this after the generic map file
+  # so that if there are any conflicts, the juniper aliases will override the map file.
+  conffile = File.open($opts[:junosin], 'r')
+
+  conffile.each_line do |x|
+    line = x.split
+    if line.at(2) == 'code-point-aliases' && (line.at(3) == 'dscp' || line.at(3) == 'dscp-ipv6')
+      h_dscp_map[line.at(4)] = line.at(5)
+    end
+  end
+
+  conffile.close
+
   return h_dscp_map
 end
 # Method orchestrations the translation of juniper source-addres, destination-address, prefix,
@@ -408,7 +422,7 @@ def create_address_objects
 
     unless filterused
       p "create_fgpolicy_address_objects: filter is not used by an interface. skipping filtername: #{filtername}"\
-        if $opts[:debug]
+        #if $opts[:debug]
       next
     end
 
@@ -420,6 +434,8 @@ def create_address_objects
             a_addresses << sourcename
           end
 
+          # For rules reference prefix-lists need to find the prefix list and iterate through all of the
+          # defined addressses, creating an address object for each
           if sourcetype == :'source-prefix-list' ||\
              sourcetype == :'destination-prefix-list' ||\
              sourcetype == :'prefix-list'
@@ -506,9 +522,10 @@ def check_if_filter_used(filtername)
           return filterused if filterused
         end
       end
-      return filterused
+      return filterused if filterused
     end
   end
+  return filterused
 end
 
 # This method orchestrates the analysis of juniper protocol definitions
@@ -1015,9 +1032,7 @@ def action_rule_support_type(ruletype, filterref, h_filters, filtertype, filter,
 
     # Call get_rule_detail to provide most relevant config detail related to this filter/term
     # The following are returned as sets from the get_rule_detail method
-    srcaddr, dstaddr, sport, dport, protocol, service_negate, result, dscp = get_rule_detail(filtertype, filter, term)
-
-    action = h_filters[filter][term][:action]  # *update* this 'action' set should be moved to get_rule_detail method
+    srcaddr, dstaddr, sport, dport, protocol, action, service_negate, result, dscp = get_rule_detail(h_filters, filtertype, filter, term)
 
     # Using provided rule detail config_fwrules method will return the FG configuration for "normal" rules
     # this includes determining interfaces vs policy based rules
@@ -1107,7 +1122,7 @@ end
 # options filtertype = :ipv4_input_filter, :ipv4_output_filter, ipv6_input_filter
 # ipv6_output_filter.  filter = name of filter (should be type sym),
 # term = name of filter (should be a symbol)
-def get_rule_detail(filtertype, filter, term)
+def get_rule_detail(h_filters, filtertype, filter, term)
 
   # Check filtertype and assign correct global hash ($h_filters or $h_filters6) to filters
   case filtertype
@@ -1205,25 +1220,16 @@ def get_rule_detail(filtertype, filter, term)
     end
   end
 
-  return srcaddr, dstaddr, sport, dport, protocol, svcnegate, result, dscp
+  action = h_filters[filter][term][:action]
+
+  return srcaddr, dstaddr, sport, dport, protocol, action, svcnegate, result, dscp
 end
 
 # This method translates juniper rule detail passed in (such as srcaddr, dstaddr, dport, action)
 # into FG policy. This method returns the FG firewall policy associated to 1 single filter term
-def config_fwrules(filtertype,\
-                   srcaddr,\
-                   dstaddr,\
-                   sport,\
-                   dport,\
-                   protocol,\
-                   action,\
-                   svc_negate,\
-                   interface,\
-                   int,\
-                   sub,\
-                   filter,\
-                   term,\
-                   dscp)
+def config_fwrules(filtertype, srcaddr, dstaddr, sport, dport, protocol, action, svc_negate, interface,
+                   int, sub, filter, term, dscp)
+
 
   # Initialize
   newaddobj = false
