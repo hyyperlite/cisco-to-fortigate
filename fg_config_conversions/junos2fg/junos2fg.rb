@@ -622,44 +622,48 @@ EOS
               ### tcp/udp objects and will process icmp under a different case
               tcp, udp, icmp = nil
               if filters[filtername][termname][:source].has_key?(:tcp)
-                tcp = 1
+                tcp = true
               end
 
               if filters[filtername][termname][:source].has_key?(:udp)
-                udp = 1
+                udp = true
               end
 
               if filters[filtername][termname][:source].has_key?(:icmp)
-                icmp = 1
+                icmp = true
               end
              unless tcp && udp && icmp
-               tcp = 1
-               udp = 1
+               tcp = true
+               udp = true
              end
 
               # create a tcp destination object if term contains protocol tcp and if
               # it's not type source-port and if we haven't already created this object
-              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+              if (tcp && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-tcp", lowport, highport, "from term: #{termname}",\
                                               category, :dst, :tcp)
+
                 service_tracker.add("#{sourcename}-tcp")
               end
 
-              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
+              if (udp && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-udp", lowport, highport, "from term: #{termname}",\
                                               category, :dst, :udp)
+
                 service_tracker.add("#{sourcename}-udp")
               end
 
-              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
+              if (tcp && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}",\
                                               category, :src, :tcp)
+
                 service_tracker.add("#{sourcename}-tcp_source")
               end
 
-              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
+              if (udp && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}",\
                                               category, :src, :udp)
+
                 service_tracker.add("#{sourcename}-udp_source")
               end
 
@@ -686,44 +690,46 @@ EOS
               # tcp/udp objects and will process icmp under a different case
               tcp, udp, icmp = nil
               if filters[filtername][termname][:source].has_key?(:tcp)
-                tcp = 1
+                tcp = true
               end
 
               if filters[filtername][termname][:source].has_key?(:udp)
-                udp = 1
+                udp = true
               end
 
               if filters[filtername][termname][:source].has_key?(:icmp)
-                icmp = 1
+                icmp = true
               end
               unless tcp && udp && icmp
-                tcp = 1
-                udp = 1
+                tcp = true
+                udp = true
               end
 
-              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
+              if (tcp && !service_tracker.include?("#{sourcename}-tcp") && sourcetype != :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-tcp", lowport, highport, "from term: #{termname}",\
                                               category, :dst, :tcp)
 
                 service_tracker.add("#{sourcename}-tcp")
               end
 
-              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
+              if (udp && !service_tracker.include?("#{sourcename}-udp") && sourcetype != :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-udp", lowport, highport, "from term: #{termname}",\
                                               category, :dst, :udp)
 
                 service_tracker.add("#{sourcename}-udp")
               end
 
-              if (tcp == 1 && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
+              if (tcp && !service_tracker.include?("#{sourcename}-tcp") && sourcetype == :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-tcp_source", lowport, highport, "from term: #{termname}",\
                                               category, :src, :tcp)
+
                 service_tracker.add("#{sourcename}-tcp_source")
               end
 
-              if (udp == 1 && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
+              if (udp && !service_tracker.include?("#{sourcename}-udp") && sourcetype == :'source-port')
                 svcconfig += config_fgservice("#{sourcename}-udp_source", lowport, highport, "from term: #{termname}",\
                                               category, :src, :udp)
+
                 service_tracker.add("#{sourcename}-udp_source")
               end
             end
@@ -958,7 +964,6 @@ def create_policy(filtertype)
     newconfig += "config firewall address\n"
 
     newaddresses.each do |x|
-      p "there are new addresses"
       newconfig += <<-EOS
   edit #{x}
     set type subnet
