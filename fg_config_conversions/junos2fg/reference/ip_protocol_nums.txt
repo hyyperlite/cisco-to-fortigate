@@ -1,0 +1,10 @@
+1 icmp
+2 igmp
+3 ggp
+4 ipv4
+5 st
+6 tcp
+7 cbt
+8 egp
+9 igp
+17 udp

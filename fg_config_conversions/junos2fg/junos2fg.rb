@@ -421,8 +421,8 @@ def create_address_objects
     filterused = check_if_filter_used(filtername)
 
     unless filterused
-      p "create_fgpolicy_address_objects: filter is not used by an interface. skipping filtername: #{filtername}"\
-        #if $opts[:debug]
+      p "create_address_objects: filter is not used by an interface. skipping filtername: #{filtername}"\
+        if $opts[:debug]
       next
     end
 
@@ -451,7 +451,6 @@ def create_address_objects
               end
             end
           end
-
       end
     end
   end
@@ -503,26 +502,34 @@ def check_if_filter_used(filtername)
   # define vars
   filterused = nil
 
-  # Check to see if filter is used by an interface
-  $h_interfaces.each_key do |int|
-    $h_interfaces[int].each_key do |sub|
-      if $h_interfaces[int][sub][:ipv4_input_filter] == filtername ||\
+  if $opts[:interfacemapout]
+    $h_ints_map_out.each_key do |x|
+      int, sub = x.split()
+
+     #  if $h_interfaces[int][sub][:ipv4_input_filter] == filtername ||\
+     #     $h_interfaces[int][sub][:ipv6_input_filter] == filtername ||\
+     #     $h_interfaces[int][sub][:ipv4_output_filter] == filtername ||\
+     #     $h_interfaces[int][sub][:ipv6_output_filter] == filtername
+     #
+     #    filterused = true
+     #    return filterused if filterused
+     #
+     #  end
+    end
+  else
+    # Check to see if filter is used by an interface
+    $h_interfaces.each_key do |int|
+      $h_interfaces[int].each_key do |sub|
+        if $h_interfaces[int][sub][:ipv4_input_filter] == filtername ||\
            $h_interfaces[int][sub][:ipv6_input_filter] == filtername ||\
            $h_interfaces[int][sub][:ipv4_output_filter] == filtername ||\
            $h_interfaces[int][sub][:ipv6_output_filter] == filtername
-        filterused = true
-      end
 
-      # added in to support new request to process specific interfaces
-      # for performance this check should occur before parsing all interfaces above
-      # but for expediency it is here right now.  Will move later  *update*
-      if $opts[:interfacemapout] && filterused
-        $h_ints_map_out.each_key do |x|
-          filterused = nil unless x == "#{int}-#{sub}"
+          filterused = true
           return filterused if filterused
+
         end
       end
-      return filterused if filterused
     end
   end
   return filterused
@@ -956,7 +963,7 @@ def create_policy(filtertype)
 
               fwconfig += newconfig
 
-              # Add any new address objects that need to be configured to a set
+              # Add any new address objects that need to be configured to a set (due to any dst int map)
               newaddresses << newaddobj if newaddobj
             end
 
@@ -1005,18 +1012,35 @@ def check_rule_support_type(filter, term, h_filters)
 
   # Initialize vars
   ruletype = :normal
-  filterref = ''
+  rules = Set.new
+  filterref = String.new
 
   h_filters[filter][term][:source].each do |object, objtype|
     if objtype == :'forwarding-class' || objtype == :'tcp-established' || objtype == :filter
-      ruletype = objtype
+      rules << objtype
     end
 
     # If the type is :filter, this is a link to another entire filter (aka nested filter), we must pass back the name
     # of the referenced/nested filter and recurse that filter to get the details for this rule.
     filterref = object if objtype == :filter
 
-    return ruletype, filterref unless ruletype == 'normal'
+  end
+
+  ## Had to do the below manually instead of automated to establish precedence because we need to ensure that if
+  ## it containts tcp-established we return that and skip despite any other types.
+  if rules.include?(:'tcp-established')
+    ruletype = :'tcp-established'
+    return ruletype, filterref
+  end
+
+  if rules.include?(:'forwarding-class')
+    ruletype = :'forwarding-class'
+    return ruletype, filterref
+  end
+
+  if rules.include?(:filter)
+    ruletype = :filter
+    return ruletype, filterref
   end
 
   return ruletype, filterref
@@ -1551,6 +1575,8 @@ pp $h_filters6 if $opts[:v6filterprint]
 # puts $h_filters.to_json
 # JSON.pretty_generate($h_filters).gsub(":", " =>")
 
+
+
 unless $opts[:nostats]
   p ''
   p '############ Stats ###############'
@@ -1582,3 +1608,24 @@ unless $opts[:nostats]
   p "  -Total Used IPv6 Input Filters..................#{$ipv6_uniq_inputfilter_count.uniq.count}"
   p "  -Total Used IPv6 Output Filters.................#{$ipv6_uniq_outputfilter_count.uniq.count}"
 end
+
+# *update*
+# i = 0
+# $h_interfaces.each_key do |int|
+#   $h_interfaces[int].each_key do |sub|
+#     if i < 10
+#       p "#{int.to_s}-#{sub} green"
+#       i += 1
+#     elsif i < 20
+#       p "#{int.to_s}-#{sub} blue"
+#       i += 1
+#     elsif i < 30
+#       p "#{int.to_s}-#{sub} red"
+#       i += 1
+#     else
+#       break
+#     end
+#   end
+# end
+
+
