@@ -1,0 +1,3 @@
+0 ip6-header-bad
+1 unrecognized-next-header
+2 unrecognized-option
