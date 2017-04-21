@@ -22,8 +22,8 @@ Usage:
 where [options] are:
 EOS
 
-  opt :junosin, 'Configuration File', :type => :string, :default => 'juniper.conf', :short => '-i'
-  opt :fgout, 'Configuration File', :type => :string, :default => 'output.conf', :short => '-o'
+  opt :junosin, 'Configuration File', :type => :string, :default => 'junos.conf', :short => '-i'
+  opt :fgout, 'Configuration File', :type => :string, :default => 'junos2fg.out', :short => '-o'
   opt :debug, 'Turn on detailed messaging', :short => '-d'
   opt :verbose, 'Enable process details', :short => '-v'
   opt :nostats, 'Disable statistical output', :short => '-n'
